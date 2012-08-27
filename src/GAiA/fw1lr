@@ -1,0 +1,170 @@
+#!/bin/sh
+#
+# chkconfig: 2345 55 25
+# description: Some DEiC i2 start up script
+#
+
+SN=fw1lr
+PKG=UNI${SN}
+PORT=9876
+
+# Source function library.
+. /etc/rc.d/init.d/functions
+
+# Source networking configuration.
+. /etc/sysconfig/network
+
+# Source CP specific configuration
+. /tmp/.CPprofile.sh
+
+# Source the rest
+. /home/admin/.bash_profile
+
+# Check that networking is up.
+[ ${NETWORKING} = "no" ]        && exit 1
+
+PROG=/web/cpshared/web/Apache/2.2.0/bin/httpd2
+
+SERVER=/web/cpshared/web/Apache/2.2.0/bin/httpd2
+
+PROD_DIR=/var/opt/$PKG
+
+RC=${PROD_DIR}/etc/${SN}
+
+CONFIG=${PROD_DIR}/etc/httpd2.conf
+IPADDR=${PROD_DIR}/etc/.listen_ip.txt
+
+ARGS=" -D FOREGROUND"
+
+
+case "$1" in
+	setup)
+		LOGDIRBASE=`df -P $FWDIR/log|awk '$1 != "Filesystem" { print $NF }'`
+		DATADIR=$LOGDIRBASE/UNIfw1lr/data
+		# Dirs: $FWDIR/log -> /var/log/UNIfw1lr/data
+		# data has to reside no the same partition as $FWDIR/log due to hardlinked logfiles
+		for DIR in $DATADIR/html $PROD_DIR/tmp $PROD_DIR/log
+		do
+			test -d ${DIR} || mkdir -p $DATADIR/html $PROD_DIR/tmp $PROD_DIR/log
+		done
+		echo "creating dir	$DATADIR"
+		echo "creating link	$PROD_DIR/data"
+		echo "creating link	$PROD_DIR/data/RGraph"
+
+		/bin/rm -f $PROD_DIR/data	# link?
+		ln -s $DATADIR $PROD_DIR/data
+		test $PROD_DIR/data/RGraph && rm -f $PROD_DIR/data/RGraph
+		ln -s $PROD_DIR/RGraph $PROD_DIR/data/RGraph
+
+		echo "creating /etc/cron.d/${SN} ... "
+		cat << EOF > /etc/cron.d/${SN}
+# process firewall logfiles
+59 23 * * * root [ -x /var/opt/UNIfw1lr/bin/fw1lr-wrapper.sh ] && /var/opt/UNIfw1lr/bin/fw1lr-wrapper.sh
+EOF
+		chmod 640	/etc/cron.d/${SN}
+
+		if [ -f /etc/cron.d/UNIfw1lr ]; then		# old version
+			/bin/rm -f /etc/cron.d/UNIfw1lr
+		fi
+
+		echo creating /etc/init.d/${SN} ...
+		/bin/cp ${PROD_DIR}/etc/${SN} /etc/init.d/${SN}
+		chkconfig --add ${SN}
+		chkconfig --list ${SN}
+
+		echo checking links ... 
+		for LINK in conf ismodules modules
+		do
+			if [ ! -h $PROD_DIR/data/$LINK ]; then
+				if [ ! -e  $PROD_DIR/data/$LINK ]; then
+					echo "creating sym link /web/$LINK $PROD_DIR/data/$LINK"
+					ln -s /web/$LINK $PROD_DIR/data/$LINK
+				else
+					echo "warn: $PROD_DIR/data/$LINK should be a link"
+				fi
+			fi
+		done
+
+		echo  "setting mode correctly ..."
+		(
+			cd $PROD_DIR;
+			find data/html RGraph bin data docs etc fwlogsum* log tmp -type d	| xargs chmod 755
+			find data/html etc log tmp   -type f -exec chmod 0644 {} \;
+			find bin etc/${SN} fwlogsum* -type f -exec chmod 0755 {} \;
+
+			cd $LOGDIRBASE/$PKG;
+			find . -type d -exec chmod 0755 {} \;
+		)
+
+		echo "creating `basename ${CONFIG}` from `basename ${CONFIG}.tmpl` ... "
+
+		if [ -f "${IPADDR}" ]; then
+			LISTEN_IP="`cat ${IPADDR}`"
+			echo "found file ${IPADDR}"
+			echo "listen ip = $LISTEN_IP"
+		else
+			if [ -f "${CONFIG}" ]; then
+				LISTEN_IP=`sed " /^Listen/!d; s/^Listen//; s/:.*//; s/^[ \t]*//; s/[ \t]*$//; " ${CONFIG}`
+				echo ${LISTEN_IP} > ${IPADDR}
+			else
+				LISTEN_IP="127.0.0.1"
+			fi
+			echo "listen ip = $LISTEN_IP - please change in ${CONFIG}"
+		fi
+
+		SERVER_ROOT="/var/opt/${PKG}/data"
+		PID_FILE="/var/opt/${PKG}/tmp/httpd2.pid"
+		SBFILE="/var/opt/${PKG}/tmp/apache_runtime_status"
+		DOCUMENT_ROOT="/var/opt/${PKG}/data/html"
+		SERVER_NAME="`/bin/hostname`.`/bin/domainname`"
+
+		sed "
+			s%__SERVER_ROOT__%${SERVER_ROOT}%g;
+			s%__PID_FILE__%${PID_FILE}%g;
+			s%__SBFILE__%${SBFILE}%g;
+			s%__DOCUMENT_ROOT__%${DOCUMENT_ROOT}%g;
+			s%__SERVER_NAME__%${SERVER_NAME}%g;
+			s%__LISTEN_IP__%${LISTEN_IP}%g;
+			s%__PORT__%${PORT}%g;
+		" ${CONFIG}.tmpl > ${CONFIG}
+
+		# clean up any prev. installations
+		TMP=/tmp/crontab.tmp.$$
+		crontab -u admin -l |
+			egrep -v 'fw1lr|fw1logrotate|^# DO NOT EDIT|^# ./tmp|^# .Cron version' > $TMP
+		crontab -u admin $TMP
+		/bin/rm -f $TMP
+
+		$PROD_DIR/bin/mkindex -v
+		echo "Starting server on $LISTEN_IP ... "
+		ipcs -s | grep nobody | perl -e 'while (<STDIN>) { @a=split(/\s+/); print `ipcrm sem $a[1]`}' > /dev/null 2>&1
+		$0 restart
+
+	;;
+        start)  $SERVER -k start -f $CONFIG $ARGS &
+                RETVAL=$?
+        ;;
+        stop)   pids=`ps -fe | sed "\%${SERVER}%!d; \%${CONFIG}%!d; /\\%/d " | awk '{ print $2 }'`
+		if [ -n  "$pids" ]; then
+			kill -9 $pids
+		fi
+                RETVAL=$?
+         ;;
+
+        status) pids=`ps -fe | sed "\%${SERVER}%!d; \%${CONFIG}%!d; /\\%/d " | awk '{ print $2 }'`
+		pids=`echo ${pids}`
+                case "${pids}" in
+                        "")     echo "$PROG not running"
+                        ;;
+                        *)      echo "$PKG is running on pid $pids"
+                        ;;
+                        esac
+        ;;
+        restart) $RC stop; $RC start
+        ;;
+        *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+esac
+
+exit 0

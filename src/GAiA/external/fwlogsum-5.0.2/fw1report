@@ -1,0 +1,48 @@
+#!/bin/ksh
+#-----------------------------------------------------------------------------
+#
+# Name:         fw1report
+#
+# Created:      Peter Sundstrom
+#
+# Date:		07 Nov 1996
+#
+# Function:     Sample to create multiple fwlogsum summaries
+#
+# Updated:	2 Dec 1998 for new version of fwlogsum.  Also made to be
+#		Y2K complient :-)
+#-----------------------------------------------------------------------------
+
+TEMP=/tmp/fw$$				# Temporary holding file
+REPORT=/usr/local/bin/fwlogsum		# Report summariser
+DATE=`date +"%Y%m%d"`			# Date in yyyymmdd format
+WWW=/usr/local/htdocs			# Web root
+
+
+/etc/fw/bin/fw logexport >$TEMP 2>/dev/null
+
+#
+# Generate the accept report
+#
+$REPORT -l $TEMP -ra -sv -e "http|smtp|auth|ident" -i "icmp" -m security@ginini.com.au
+
+#
+# Generate the reject reports
+#
+$REPORT -l $TEMP -rr -e "ident" -m security@ginini.com.au
+$REPORT -l $TEMP -w -rr -e "ident" -o $WWW/fw1/reject/$DATE.html
+
+
+# 
+# Generate inbound traffic reports
+#
+$REPORT -l $TEMP -e "ident" -bi -m fw1reportinr@ginini.com.au
+$REPORT -l $TEMP -w -sv -bi -o $WWW/fw1/inbound/$DATE.html
+
+#
+# Generate outbound traffic reports
+#
+$REPORT -l $TEMP -bo -m fw1reportoutr@ginini.com.au
+$REPORT -l $TEMP -w -ra -sv -bo -m -o $WWW/fw1/outbound/$DATE.html
+
+rm -f $TEMP

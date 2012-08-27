@@ -1,0 +1,113 @@
+#!/usr/bin/perl 
+#------------------------------------------------------------------------------
+#
+# SCRIPT:	urules
+#
+# AUTHOR:	Peter Sundstrom (peter@ginini.com)
+#
+# FUNCTION:	Analyses a FW1 log export file and reports any unused rules.
+# 
+# SOURCE:	http://www.ginini.com/software/fwlogsum/
+#
+#==============================================================================
+
+use strict;
+use Getopt::Long; 
+
+my $version='1.1.0';
+
+my $delimiter=';';	# Change if you don't use the default delimiter
+
+#
+# Process arguments
+#
+my %opt;
+Getopt::Long::config("bundling");
+
+GetOptions( \%opt,
+	'o=s', 'output=s',
+	'n',   'notreferenced',
+	'r', 'referenced',
+) or Usage();
+
+Usage() unless $#ARGV == 1;
+
+if ($opt{o} or $opt{output}) {
+	my $output = $opt{o} || $opt{output};
+	open OUTPUT, ">$output" or die "Can not create $output $!\n";
+}
+
+my $notref = 1 if ($opt{n} or $opt{notreferenced});
+my $referenced = 1 if ($opt{r} or $opt{referenced});
+
+my $log=$ARGV[0];
+my $maxrules=$ARGV[1];
+
+open LOG, $log or die "Can not open $log $!\n";
+die "maxrules parameter is not valid\n" if ($maxrules < 0 or $maxrules !~ /\d+/);
+
+my (@header,%rule,%total);
+
+while (<LOG>) {
+	chomp;
+
+	# Breakup the header line into an array
+	if (/num.date.time/) {
+		(@header) = split(/$delimiter/);
+		next;
+	}
+
+	# Create a hash based on the header fieldnames
+	my (@logline) = split(/$delimiter/);
+
+	my %logentry;
+	my $field=0;
+
+	foreach (@logline) {
+		$logentry{$header[$field]}=$_;
+		$field++;
+	}
+
+	# Ignore any entries that don't have a rule number like control messages
+	next unless $logentry{'rule'};
+
+	# Increment rule number base on FW1 origin
+	my $orig = $logentry{'orig'};
+	my $ruleno = $logentry{'rule'};
+	$rule{$orig}->{$ruleno}++;
+	$total{$orig}++;
+}
+
+foreach my $fworig (keys %rule) {
+	print "\n\n==================================================\n";
+	print "FW1 source: $fworig\n";
+	print "==================================================\n";
+
+	for my $no (1..$maxrules) {
+		if ($rule{$fworig}->{$no}) {
+			unless ($notref) {
+				my $count = $rule{$fworig}->{$no};
+				my $percent = ($count / $total{$fworig}) * 100;
+				printf("Rule %d used %d times.\t%2.2f%% of total\n",$no,$count,$percent);
+			}
+		}
+		else {
+			print "Rule $no not referenced\n" unless $referenced;
+		}
+	}
+}
+
+#---------------------------------------------------------------------------
+sub Usage {
+	print <<EOF;
+Usage: $0 [-nr] [-o <file>] <log file> <number of rules>
+
+-n --notreferenced	Report only rules that are not referenced
+-o --output		Output to specified file
+-r --referenced		Report only rules that are referenced
+
+EOF
+
+	exit 1;
+}
+

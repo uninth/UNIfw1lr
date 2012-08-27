@@ -1,0 +1,172 @@
+<!doctype html public "-//W3C//DTD HTML 4.0 Transitional //EN">
+<html>
+<head>
+  <meta name="GENERATOR" content="mkd2html 2.1.8 DL=DISCOUNT">
+  <meta http-equiv="Content-Type"
+        content="text/html; charset=utf-8">  <link rel="stylesheet"
+        type="text/css"
+        href="assets/CSS/i2-Book.css" />
+</head>
+<body>
+<h1>Introduction</h1>
+
+<p><strong>UNIfw1lr</strong> - <em>UNI•C FireWall-1 Log Rotation</em> - is a simple firewall log
+rotation and log management solution for Check Point firewall-1 made by UNI•C,
+now i2.dk.</p>
+
+<p>This version is compatible with
+<a href="http://en.wikipedia.org/wiki/Check_Point_VPN-1">GAiA</a> and has been tested on
+Check Point R77.10, R77.20 and R77.30, and should work with all later R77.x
+versions, both appliances and open servers. It is not compatible with Secure
+Platform.</p>
+
+<p>Once installed all firewall logs gets</p>
+
+<ol>
+<li>rotated on a daily basis</li>
+<li>exported to a CSV text file with each field described in the first line</li>
+<li>processed by report generator that generates top 10 reports on
+
+<ul>
+<li>accepted traffic</li>
+<li>dropped and rejected traffic</li>
+<li>attacks</li>
+</ul>
+</li>
+</ol>
+
+
+<p>The log files will be visible through the <em>Check Point Log Viewer</em> for a
+specific number of days (default 10), then compressed and left in the
+filesystem for default 20 days more, before they are deleted.</p>
+
+<p>All files are available for download from a SSL enabled WebServer (installed
+with the firewall) running on TCP port 9876. The WebServer uses the certificate
+from defaultCert.</p>
+
+<p><strong>UNIfw1lr</strong> is free software and released under a
+<a href="https://opensource.org/licenses/BSD-3-Clause">modified BSD License</a>, see LICENSE. Using the
+software requires a valid support contract with <a href="http://www.checkpoint.com">Check Point Technologies</a>.</p>
+
+<h1>Prerequisites and caveats</h1>
+
+<p>Please <em>disable all Check Point log rotation configurations</em>, as it will
+interfere with <strong>UNIfw1lr</strong> and prevent purging of logs rotated by Check Point
+due to differences in log file naming.</p>
+
+<h1>Installation</h1>
+
+<p><strong>UNIfw1lr</strong> is installed as a package (RPM) and requires the package
+<strong>UNItools</strong> to be installed first. UNIfw1lr is installed on the management
+station. It may also be installed on enforcement modules, to avoid filling the
+filesystem with log files in case of error(s).</p>
+
+<h1>How does UNIfw1lr work</h1>
+
+<p><strong>UNIfw1lr</strong> runs every day at <strong>23:59</strong>. It does log file house keeping
+according to its configuration file stored in <code>/var/opt/UNIfw1lr/etc/fw1logrotate.conf</code>.</p>
+
+<ul>
+<li>The <em>active firewall log</em> is switched and the old log file exported to a</li>
+<li><a href="http://en.wikipedia.org/wiki/Comma-separated_values">cvs file</a>. The first line describes the fields.
+The exported file may be quite large and on a busy system exceed 2,147.483.647 Gb which may cause problems
+on 32bit systems (see <a href="http://linuxmafia.com/faq/VALinux-kb/2gb-filesize-limit.html">2GB file-size limit</a>).</li>
+<li>Tree reports are made based on the exported log:
+
+<ul>
+<li><strong>top 10 accepted</strong> for <em>rules</em>, <em>source</em>, <em>destination</em> and <em>protocol</em>.</li>
+<li><strong>top 10 dropped and rejected</strong> for <em>rules</em>, <em>source</em>, <em>destination</em> and <em>protocol</em>.</li>
+<li><strong>top 10 attack</strong> for <em>rules</em>, <em>source</em>, <em>destination</em> and <em>protocol</em>.</li>
+</ul>
+</li>
+<li>Logfiles older than a specific date (default 10) is compressed.</li>
+<li>Compressed log files older than a specific date (default 20) is deleted.</li>
+</ul>
+
+
+<p>The reports are made with <a href="http://www.ginini.com/software/fwlogsum">fwlogsum 5.0.2</a>
+&copy; 1996-2004 Peter Sundstrom, peter@ginini.com. This may be changed in
+<a href="src/GaIA/default.report.sh">default.report.sh</a>.</p>
+
+<p><strong>UNIfw1lr</strong> starts an SSL enabled WebServer on boot. The server is part of the
+base operating system and maintained by Check Point. The server binds to a
+specific IP address and TCP port 9876. The server does not require login and
+password and should be restricted to e.g. the admin group and e.g. a log
+consolidator system.</p>
+
+<p>An example is shown here:</p>
+
+<p><img src="assets/img/mainview.png" alt="mainview" /></p>
+
+<p><img src="assets/img/index.png" alt="index/day view" /></p>
+
+<p>In the example the server is bound on <code>192.168.112.1</code> so the server URL is</p>
+
+<pre><code> https://192.168.112.1:9876
+</code></pre>
+
+<p>Notice that the <a href="http://en.wikipedia.org/wiki/Self-signed_certificate">SSL certificate</a>
+will cause a browser warning.</p>
+
+<p>The servers configuration file is <code>/var/opt/UNIfw1lr/etc/httpd2.conf</code>. The default
+bind address is 127.0.0.1.</p>
+
+<h1>What not to expect from UNIfw1lr</h1>
+
+<p><strong>UNIfw1lr</strong> is not a replacement for
+<a href="https://www.checkpoint.com/products/logging-status-featuring-smartlog/index.html">Check Point SmartLog</a>
+but primarily a tool to rotate and compress log files, and make them available
+for a log archiver.</p>
+
+<h1>Using UNIfw1lr</h1>
+
+<p><strong>UNIfw1lr</strong> should be accessed by a <a href="http://en.wikipedia.org/wiki/Log_management"><em>log consolidator</em></a>
+for collecting and archiving log files. A simple shell script (<code>get_firewall_logs.sh</code>) which will
+collect the log files from an external server is located in <code>/var/opt/UNIfw1lr/docs</code>.</p>
+
+<p>If you choose to use <a href="http://www.gnu.org/software/wget/">GNU wget</a> /
+<a href="https://eternallybored.org/misc/wget/">wget for windows</a> you may use the
+<a href="https://www.cygwin.com">bash for windows</a> snipet:</p>
+
+<pre>
+wget -N --reject 'index.html' -r -m --no-check-certificate \
+https://${SRVR}:${PORT} > ${TMPFILE} 2>&1
+ERRORS=$?
+case $ERRORS in
+0) MSG="wget: No problems occurred."
+;;
+1) MSG="wget: Generic error code."
+;;
+2) MSG="wget: Parse error"
+;;
+3) MSG="wget: File I/O error."
+;;
+4) MSG="wget: Network failure."
+;;
+5) MSG="wget: SSL verification failure."
+;;
+6) MSG="wget: Username/password authentication failure."
+;;
+7) MSG="wget: Protocol errors."
+;;
+8) MSG="wget: Server issued an error response"
+;;
+esac
+</pre>
+
+
+<h1>Known limitations</h1>
+
+<ul>
+<li><strong>UNIfw1lr</strong> uses <a href="http://en.wikipedia.org/wiki/Hard_link">hard links</a> to
+minimize disk usage. This requires all files to reside on the same
+partition: <code>$FWDIR/log</code> and the directory used by <strong>UNIfw1lr</strong> to store
+files must be on the same partition. This is ensured during package
+installation.</li>
+<li>R77.xx comes in two flavors: 32bit and 64bit. Smaller appliances like the
+<a href="https://www.checkpoint.com/downloads/product-related/datasheets/2200-appliance-datasheet.pdf">2200 series</a>
+has a 32bit CPU and therefore suffers from the 2.1Gb file size limitation.</li>
+</ul>
+
+</body>
+</html>

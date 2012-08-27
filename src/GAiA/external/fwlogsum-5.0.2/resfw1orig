@@ -1,0 +1,52 @@
+#!/usr/bin/perl -w
+#------------------------------------------------------------------------------
+#
+# SCRIPT:	ip2addr.pl
+#
+# AUTHOR:	Peter Sundstrom (March 2000)
+#
+# FUNCTION:	Resolves the IP address of the FW1 origin field in a logexport
+#		log, so that it can be split into the various individual logs
+#		based on the name.
+#
+# NOTES:	This method can be negated by using fw logexport to resolve
+#		names, but it significantly slows down the time it takes 
+#		to generate the logs.  The one advantage with FW1 resolving
+#		the names is that it converts NAT addresses.
+#
+#==============================================================================
+
+use strict;
+use Socket;
+
+while (<>) {
+	next if (/^$/);
+
+	my @line=split(';');
+
+	if ($line[3] =~ /(\d+\.\d+\.\d+\.\d+)/) {
+		my $name=ResolveIPAddress($line[3]);
+		s/^(\w+;\w+;\d+:\d+:\d+;)(\d+\.\d+\.\d+\.\d+)(.*)/$1$name$3/;
+	}
+
+	print;
+}
+
+
+sub ResolveIPAddress {
+	my $Address = shift;
+	my %Host;
+	my $Hostname;
+
+        return $Host{$Address} if ($Host{$Address});
+
+	if ($Address =~ /(\d+\.\d+\.\d+\.\d+)/) {
+		$Hostname = gethostbyaddr(inet_aton($Address),AF_INET) or $Hostname="$Address";
+		$Host{$Address}="$Hostname";
+	        return $Hostname;
+    	}
+	else {
+		$Host{$Address}="$Address";
+		return $Address;
+	}
+}

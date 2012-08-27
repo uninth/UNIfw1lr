@@ -1,0 +1,93 @@
+#!/usr/bin/perl
+#==============================================================================
+#
+# NAME:		add2cache
+#
+# AUTHOR:	Peter Sundstrom (peter@ginini.com)
+#		Copyright (c)1996-2004 Peter Sundstrom
+#
+# PURPOSE:	Add entries from a host file into the DNS cache
+# 		used by fwlogsum.  This is useful in instances
+# 		where hosts aren't defined in DNS, or DNS access
+# 		is not possible.
+#
+# SOURCE:	http://www.ginini.com/software/fwlogsum/
+#
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+# 
+#==============================================================================
+
+use strict;
+
+use Getopt::Long;			# For Processing options
+use AnyDBM_File;			# For DBM functions
+use Fcntl;				# For DBM open permissions
+
+my $version='1.0.0';			# Script Version
+
+#
+# Location of DNS cache file
+#
+my $DNScache="/usr/local/etc/dnscache";
+
+#
+# Location of hosts file
+#  
+my $hostfile="/usr/local/etc/hosts";
+
+# 
+# Process arguments
+#
+my %opt;
+Getopt::Long::config("bundling");
+
+GetOptions( \%opt,
+	'h=s', 'hostfile=s',
+	'v',   'verbose',
+	) or usage();
+	
+
+$hostfile=$opt{h} if $opt{h};
+$hostfile=$opt{hostfile} if $opt{hostfile};
+
+my $verbose=1 if $opt{v} or $opt{verbose};
+
+open HOSTS,$hostfile or die "Can not open $hostfile $!\n";
+
+my %dnscache;
+tie(%dnscache,'AnyDBM_File',$DNScache,O_RDWR|O_CREAT,0600) or die "Can not open $DNScache $!\n";
+
+while (<HOSTS>) {
+	next if (/^#/ or /^$/);
+	chomp;
+
+	my ($ip,$hostname) = split;
+	print "Processing $ip $hostname\n" if $verbose;
+	$dnscache{$ip} = join(',',$hostname,time()) unless $dnscache{$ip};
+}
+
+#------------------------------------------------------------------
+sub usage {
+	print <<USAGE;
+$0: [-v] [-h <hostfile]
+
+-h --hostfile	Read entries from specified hostfile (Default: $hostfile)	
+-v --verbose	Verbose mode
+
+Version: $version
+USAGE
+	exit;
+}

@@ -1,0 +1,313 @@
+#!/bin/sh
+#
+#
+# TODO
+#	* Her mangler processering af hvert underkatalog
+
+#
+# Functions
+#
+logit() {
+# purpose     : Timestamp output
+# arguments   : Line og stream
+# return value: None
+# see also    :
+	LOGIT_NOW="`/bin/date '+%H:%M:%S (%d/%m)'`"
+	STRING="$*"
+
+	if [ -n "${STRING}" ]; then
+		$echo "${LOGIT_NOW} ${STRING}" >> ${MY_LOGFILE}
+		if [ "${VERBOSE}" = "TRUE" ]; then
+			$echo "${LOGIT_NOW} ${STRING}"
+		fi
+	else
+		while read LINE
+		do
+			if [ -n "${LINE}" ]; then
+				$echo "${LOGIT_NOW} ${LINE}" >> ${MY_LOGFILE}
+				if [ "${VERBOSE}" = "TRUE" ]; then
+					$echo "${LOGIT_NOW} ${LINE}"
+				fi
+			else
+				$echo "" >> ${MY_LOGFILE}
+			fi
+		done
+	fi
+}
+
+function mkglobal_index()
+{
+
+logit "making index.html i $HTML ... "
+cd $HTML
+
+INDEX=index.html
+
+CFG=/var/opt/UNIfw1lr/etc/fw1logrotate.conf
+
+online_retension=`sed '/^online_retension/!d;  s/.*://; s/^[ \t]*//;s/[ \t]*$//'	$CFG`
+offline_retension=`sed '/^offline_retension/!d; s/.*://; s/^[ \t]*//;s/[ \t]*$//'	$CFG`
+
+TITLE="Check Point Logfiles"
+TEXT="<p>This index shows passed days Check Point logfiles, one for each line in the tables.<br/>
+The first table links to native binary and text exported (csv) files and processed reports (top 10 for
+source, destignation and service, accepted and rejected).<br/>
+The second table links to compressed logfiles</br>
+<ul>
+<li>The logfiles will be kept online and searchable for <em>$online_retension</em> days (use the Check Point GUI)
+<li>After that they will be compressed and kept for another <em>$offline_retension</em> days before they will be deleted.<br/>
+</ul>
+You are encouraged to download the logfiles; they are only kept on the
+firewall/management station. You may do so with e.g. <a
+href=\"https://en.wikipedia.org/wiki/Wget\">wget</a> or <a
+href=\"https://en.wikipedia.org/wiki/CURL\">cURL</a>, they are both available
+for windows.
+<br/>
+"
+
+(
+cat $HTMLHEAD | sed "s/_TITLE_/$TITLE/g"
+cat << EOH
+<BODY>
+<TABLE FRAME="VOID" CELLSPACING="1" COLS="1" RULES="NONE" BORDER="1"><TBODY><TR><TD>
+<H1>$TITLE</H1>
+$TEXT
+</P>
+<div class="unistyle">
+<table>
+<thead><tr>
+<th>Check Point firewall binary and Exported logfiles</th>
+<th>Size</th>
+<th>Type</th>
+</tr></thead>
+<tbody>
+EOH
+
+
+# 2016_04_19_23-59-02;18792
+find .  -maxdepth 1 -type d | sort -nr | while read DIR
+do
+	du -ks $DIR | awk ' $2 == "." {	next ; }; { sub(/^\.\//, "", $2);  print $2 ";" $1; }'
+done | gawk -F';' '
+		BEGIN {
+			split("Januray Feburay Marts April May Jun July August September October November December",month," ")
+			for (i in month) { month_nums[month[i]]=i; }
+			ALT = 0 ;
+		}
+		{
+				if ($1 !~ /^20/) { next; }	# skib odd YY
+
+				split($1, a, "_");				# split str on _
+				sub(/^[0-0]*/, "", a[2])		# remove leading '0'
+				yy = a[1];
+				mm = month[a[2]];
+				dd = a[3];
+				time = a[4];
+				gsub("-", ":", time);
+				line =  yy " " mm " " dd " " time ;
+
+				if (ALT == 0)
+				{
+						print "<tr><td><a href=\"" $1 "/index.html\">" line "</a></td>"
+						printf("<td> %.2f Mb </td><td>Directory</td></tr>\n\n", $2 / 1024 );
+						ALT = 1
+						next
+				}
+				else
+				{
+						print "<tr class=\"alt\"><td><a href=\"" $1 "/index.html\">" line "</a></td>"
+						printf("<td> %.2f Mb </td><td>Directory</td></tr>\n\n", $2 / 1024 );
+						ALT = 0
+						next
+				}
+		}
+'
+
+cat << EOF
+</tbody>
+</table>
+</div>
+<p>The next table links to compressed archives with similar information, one for each day.</br>
+<div class="unistyle">
+<table>
+<thead><tr>
+<th>Check Point firewall binary and Exported logfiles</th>
+<th>Size</th>
+<th>Type</th>
+</tr></thead>
+<tbody>
+EOF
+
+find .  -maxdepth 1 -type f -name '*.gz' | sort -nr | while read TGZ
+do
+	du -ks $TGZ | awk ' $2 == "." {	next ; }; { sub(/^\.\//, "", $2);  print $2 ";" $1; }'
+done | gawk -F';' '
+		BEGIN {
+			split("Januray Feburay Marts April May Jun July August September October November December",month," ")
+			for (i in month) { month_nums[month[i]]=i; }
+			ALT = 0 ;
+		}
+		{
+				if ($1 !~ /^20/) { next; }	# skib odd YY
+
+				split($1, a, "_");				# split str on _
+				sub(/^[0-0]*/, "", a[2])		# remove leading '0'
+				yy = a[1];
+				mm = month[a[2]];
+				dd = a[3];
+				sub(/.tar.gz/, "", a[4]);
+				time = a[4];
+				gsub("-", ":", time);
+				line =  yy " " mm " " dd " " time ;
+
+				if (ALT == 0)
+				{
+						print "<tr><td><a href=\"" $1 "\">" line "</a></td>"
+						printf("<td> %.2f Mb </td><td>Compressed tar archive</td></tr>\n\n", $2 / 1024 );
+						ALT = 1
+						next
+				}
+				else
+				{
+						print "<tr class=\"alt\"><td><a href=\"" $1 "\">" line "</a></td>"
+						printf("<td> %.2f Mb </td><td>Compressed tar archive</td></tr>\n\n", $2 / 1024 );
+						ALT = 0
+						next
+				}
+		}
+'
+
+
+cat << EOF
+</tbody>
+</table>
+</div>
+<p>Finally a backup of the firewall configuration with restore procedure, patchlevel information etc.</br>
+<div class="unistyle">
+<table>
+<thead><tr>
+<th>Check Point firewall backup</th>
+<th>Size</th>
+<th>Type</th>
+</tr></thead>
+<tbody>
+EOF
+
+find .  -maxdepth 1 -type f -name '*.tgz' | sort -nr | while read TGZ
+do
+	du -ks $TGZ | awk ' $2 == "." {	next ; }; { sub(/^\.\//, "", $2);  print $2 ";" $1; }'
+done | gawk -F';' '
+		BEGIN {
+			split("Januray Feburay Marts April May Jun July August September October November December",month," ")
+			for (i in month) { month_nums[month[i]]=i; }
+			ALT = 0 ;
+		}
+		{
+				if ($1 !~ /^20/) { next; }	# skib odd YY
+
+				split($1, a, "_");				# split str on _
+				sub(/^[0-0]*/, "", a[2])		# remove leading '0'
+				yy = a[1];
+				mm = month[a[2]];
+				dd = a[3];
+				sub(/.tar.gz/, "", a[4]);
+				time = a[4];
+				gsub("-", ":", time);
+				line =  yy " " mm " " dd " " time ;
+
+				if (ALT == 0)
+				{
+						print "<tr><td><a href=\"" $1 "\">" line "</a></td>"
+						printf("<td> %.2f Mb </td><td>Compressed tar archive</td></tr>\n\n", $2 / 1024 );
+						ALT = 1
+						next
+				}
+				else
+				{
+						print "<tr class=\"alt\"><td><a href=\"" $1 "\">" line "</a></td>"
+						printf("<td> %.2f Mb </td><td>Compressed tar archive</td></tr>\n\n", $2 / 1024 );
+						ALT = 0
+						next
+				}
+		}
+'
+
+
+cat << EOF
+</div>
+</tbody>
+</table>
+</body>
+</html>
+EOF
+
+
+) > $INDEX
+
+	chmod -R 444 $INDEX
+
+	find $HTML -type d | xargs chmod 755
+	find $HTML -type f | xargs chmod 744
+}
+
+################################################################################
+# Main
+################################################################################
+
+BASEPATH=/var/opt/UNIfw1lr
+TMPDIR=${BASEPATH}/tmp
+
+DATA=${BASEPATH}/data
+HTML=${BASEPATH}/data/html				# DocumentRoot
+
+HTMLHEAD=${BASEPATH}/etc/htmlhead.txt
+
+MY_LOGFILE=${TMPDIR}/log
+
+#
+# Check args
+#
+while getopts hv opt
+do
+case $opt in
+        v)      VERBOSE=TRUE
+        ;;
+	h|*)	echo "usage: $0 [-v]"
+		echo "	-v: verbose"
+		exit 0
+	;;
+esac
+done
+shift `expr $OPTIND - 1`
+
+echo=/bin/echo
+case ${N}$C in
+	"") if $echo "\c" | grep c >/dev/null 2>&1; then
+		N='-n'
+	else
+		C='\c'
+	fi ;;
+esac
+
+# Script runs by cron so set up the admin environment
+for RC in $HOME/.profile $HOME/.bash_profile  $HOME/.bashrc /tmp/.CPprofile.sh
+do
+	if [ -f $RC ]; then
+		. $RC
+		logit ". $RC ... "
+	else
+		logit "$RC not found, ignored"
+
+	fi
+done
+
+test -f ${HTMLHEAD} || {
+	echo "$HTMLHEAD not found, bye"
+	exit 0
+
+}
+
+logit "HTML dir: $HTML"
+
+mkglobal_index
+

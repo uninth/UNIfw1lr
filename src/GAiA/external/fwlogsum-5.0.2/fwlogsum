@@ -1,0 +1,2212 @@
+#!/var/opt/UNItools/bin/perl
+#==============================================================================
+#
+# NAME:		fwlogsum
+#
+# AUTHOR:	Peter Sundstrom (peter@ginini.com)
+#		Copyright (c)1996-2004 Peter Sundstrom
+#
+# PURPOSE:	Produce a summary report of Firewall logs.
+#		Originally designed to work with Firewall-1 logs,
+#		but can now handle other firewall log formats
+#		by use of converters.  See:
+#		http://www.ginini.com/software/fwlogsum/converters/
+# 
+# SOURCE:	http://www.ginini.com/software/fwlogsum/
+#
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+# 
+#==============================================================================
+
+require 5.000;
+
+use Socket;				# For name resolution
+use Getopt::Long;			# For Processing options
+use AnyDBM_File;			# For DBM functions
+use Fcntl;				# For DBM open permissions
+
+my $version='5.0.2';			# Script Version
+
+#
+# PATHS for a Unix environment, if required. 
+#
+$FW1="/etc/fw/bin/fwm";			# Firewall-1 binary (optional) 
+$MailProg="/usr/lib/sendmail -t";	# Mailer (optional)
+$Gzip="/usr/local/bin/gzip";		# Location of gzip binary (optional)
+$Temp="/tmp/fw$$";			# Temporary File used if mailing (optional)
+
+#
+# Uncomment and set these PATHS for a NT environment, if required.
+#
+#$FW1="C:/WinNT/fw/bin/fwm.exe";	# Firewall-1 binary (optional)
+#$MailProg="C:/bin/sendmail.exe";	# Mailer (optional)
+#$Gzip="C:/bin/gzip.exe";		# Location of gzip binary (optional)
+#$Temp="C:/TEMP/FW$$";			# Temporary file used if mailing (optional)
+
+
+#
+# Define each of your FW1 hosts and their interfaces to be a descriptive name.  
+#
+# Order is:
+#
+# FW1 Hostname (in upper case w/o domain name), interface and descriptive name.
+#
+# For example:
+
+%Interfaces = 	(	"FWMAIN01 hme0"		=>	"Internal network",
+			"FWMAIN01 hme1"		=>	"Mail Gateway",
+			"FWGW02 hme1"		=>	"Corporate Gateway",
+			"FWGW02 hme0"		=>	"Corporate Gateway",
+			"INTERNETGW hme0"	=>	"Internet Gateway",
+			"INTERNETGW hme1"	=>	"Web Services Network"
+);
+
+
+#
+#
+#==================================================================
+# Configurable defaults
+#==================================================================
+ 
+#
+# File containing ISO country codes and user defined domains
+#
+$DomainFile="domains";
+
+#
+# Location of DNS cache file
+#
+$DNScachefile="/var/opt/UNIfw1lr/log/trend_db";
+
+
+#
+# Maximum age in days for cached DNS entries before they are expired
+#
+$DNSexpire=50;
+
+#
+# Delimiter for logexport fields. (semi-colon is the default)
+#
+$Delimiter=';';
+
+#
+# The verbose option is mainly for displaying number of lines being processed.
+# Messages are sent to STDERR so they don't appear in the report.
+#
+# Set to 1 for verboseness.
+#
+$Verbose=0;					
+
+#
+# If you only have one FW1 host, you can choose to remove the first column that
+# displays the FW1 host the log entry comes from.  This leaves more room for
+# the other columns.
+#
+# Set to 1 to ignore or 0 to include.
+$ExcludeFWhost=0;
+
+#
+# Choose whether you want to include the domain summaries in the report.
+#
+# Set to 0 to ignore or 1 to include.
+$IncludeDomains=1;
+
+# 
+# If you have verbose option on, the script will display number of lines
+# processed at every interval period.
+#
+$Interval=1000;
+
+#
+# Split the HTML Tables at the specified number of lines so that browsers
+# don't barf on loading a HUGE single table.  
+#
+# Setting this value to 0 means no table break.
+#
+$TableBreak=100;
+
+#
+# Report type can be 'accept', 'reject', 'drop' or
+# 'reject drop'.  
+#
+$Type='reject drop';	
+
+# 
+# Header to appear on the report.  Note that this
+# will be overridden by the -ra, -rd, -rr and -rx flags.
+#
+$Header='Dropped and Rejected Entries';	
+
+#
+# Subject line for reports that are mailed.
+# Set FullSubjectLine to 1 if you want the report type
+# included in the subject line.
+#
+$FullSubjectLine=1;
+
+# 
+# Sort category.  Can be set to:
+# count		- Sort by number of occurances.
+# fwhost	- Sort by FW1 host.
+# rule		- Sort by rule number.
+# source	- Sort by source address.
+# destination	- Sort by destination address.
+# service	- Sort by service name.
+#
+$Sort='count';	
+
+#
+# Default number of entries to include in the summaries
+#
+$Top=10;	
+
+#
+# Output format of the report.  Set to:
+# 80		- 80 column ASCII output.
+# 132		- 132 column ASCII output.
+# html		- HTML output.   
+#
+$Format='html';				
+
+# 
+# Standard HTML header to include at the top of
+# the report.  It can either be a template file
+# or a script.  If you are using a template, make
+# sure it doesn't have execute permission set,
+# otherwise it will be processed as a script.
+#
+# If left blank, a default header will be used.
+#
+$HtmlHeader='';
+
+# 
+# Standard HTML footer to include at the bottom of
+# the report.  It can either be a template file
+# or a script.  If you are using a template, make
+# sure it doesn't have execute permission set,     
+# otherwise it will be processed as a script.
+#
+# If left blank, a default footer will be used.
+#
+$HtmlFooter='';			
+
+#
+# The rest of the HTML display can be changed by modifying
+# the style sheet embedded in this script.
+#
+
+#==================================================================
+# End of configurable defaults
+#==================================================================
+
+#
+# Set the null device
+#
+if ($^O =~ /Win/i) {
+	$Null='nul';
+}
+else {
+	$Null='/dev/null';
+}
+
+#
+# Set formats for the ASCII output
+#
+%formats = (
+	'80a'	=> '%-26.26s %-26.26s %-14.14s %6d %4d',
+	'80b'	=> '%-8.8s %-22.22s %-22.22s %-13.13s %6d %4d',
+	'132a'	=> '%-48.48s %-48.48s %-20.20s %6d %5d',
+	'132b'	=> '%-12.12s %-44.44s %-44.44s %-15.15s %6d %5d',
+);
+
+#
+# Declare arrays and variables
+# This is part of the hopeful transition to running this script 
+# cleanly under 'use strict'
+#
+use vars qw(%Source %Source_Bandwidth %Destination %Destination_Bandwidth);
+use vars qw(%Rule %Rule_Bandwidth %Service %Service_Bandwidth);
+use vars qw(%Time %Time_Bandwidth %FWhost %FWhost_Bandwidth %AlertType);
+use vars qw(%SrcDomain %SrcDomain_Bandwidth %DestDomain %DestDomain_Bandwidth);
+use vars qw(%Networks %Networks_Bandwidth %Daily %Daily_Bandwidth);
+use vars qw(%Hourly_Bandwidth %Matches);
+use vars qw($line $StartReportDate $EndReportDate $StarTime $EndTime);
+use vars qw($ExcludeSrcServices $ExcludeServices $Ignore $Search $SourceName );
+use vars qw($Srvname $Srvport);
+use vars qw($DestinationName $Output $Date $ExcludeIF $ExcludeIFLines);
+
+$Control=0;
+$unknown=0;
+$Alert=0;
+$Attacks=0;
+$AttackURLs=0;
+$Crypt=0;
+$RuleNo=0;
+$Lines=0;
+$Entries=0; 
+$Ignored=0; 
+$InTraffic=0;
+$OutTraffic=0;
+$RestrictCount=0;
+$XlateAddr=0;
+$XlatePort=0;
+$Bytes=0;
+$Date=localtime();
+
+# Save options so they can be used as a META tag
+my $options=@ARGV; 
+
+#
+# Process arguments
+#
+Getopt::Long::config("bundling");
+
+GetOptions( \%opt,
+	'a=s', 'highlight=s',
+	'A',   'attackinfo',
+	'B=s', 'trenddir=s',
+	'b=s', 'outbound=s', 'inbound=s',	
+	'c=i', 'width=i',
+	'C',   'cachedns',
+	'd=s', 'delimiter=s',
+	'D',   'incdomain',
+	'e=s', 'excludesvc=s',
+	'f=s', 'excludesrcsvc=s',
+	'g=i', 'restrictcount=i',
+	'H=s', 'header=s',
+	'i=s', 'ignore=s',
+	'l=s', 'logexport=s',
+	'L=s', 'fw1log=s',
+	'm=s', 'mail=s',
+	'n=s', 'excludeif=s',
+	'o=s', 'output=s',
+	'p',   'incsrcport',
+	'P=i', 'summaries=i',
+	'q',   'postresolveip',
+	'R',   'resolveip',
+	'r=s', 'rptaccepts', 'rptattacks', 'rptdrops', 'rptrejects' ,'rptdropsrejects',
+	'S',   'summary',
+	's=s', 'sortattack', 'sortcount', 'sortdest', 'sortfw', 'sortrule', 'sortsvc', 'sortsrc',
+	't=s', 'includeonly=s',
+	'T',   'time24',
+	'v',   'verbose',
+	'w',   'html',
+	'x=s', 'xlateboth', 'xlate',
+	'y',   'svcname',
+	'Y',   'svcport'
+	) or Usage();
+	
+
+# Include domain summary
+$IncludeDomains=1 if $opt{D} or $opt{incdomain};
+
+# Summary only
+$Summary=1 if $opt{S} or $opt{summary};
+
+# Include source port 
+$SrcPortNum=1 if $opt{p} or $opt{incsrcport};
+
+# Resolve IP addresses
+$ResolveIP=1 if $opt{R} or $opt{resolveip};
+$PostResolveIP=1 if $opt{q} or $opt{postresolveip};
+
+die "No point in specifying both resolve options\n" if ($ResolveIP and $PostResolveIP);
+
+# Cache DNS
+if ($opt{C} or $opt{cachedns}) {
+	die "No point in using DNS cache without the --resolveip or -R flags\n" unless ($ResolveIP or $PostResolveIP);
+	$CacheDNS=1;
+}
+
+# 24 Hour Clock
+$Clock24=1 if $opt{T} or $opt{time24};
+
+# Verbose output
+$Verbose=1 if $opt{v} or $opt{verbose};
+
+# Highlight Line
+$HighlightLine=$opt{a} if $opt{a};
+$HighlightLine=$opt{highlight} if $opt{highlight};
+
+# Logexport delimiter
+$Delimiter=$opt{d} if $opt{d};
+$Delimiter=$opt{delimiter} if $opt{delimiter};
+
+# Output file
+$Output=$opt{o} if $opt{o};
+$Output=$opt{output} if $opt{output};
+
+# Top entries
+$Top=$opt{P} if $opt{P};
+$Top=$opt{summaries} if $opt{summaries};
+
+# Trend Directory
+if ($opt{B}) {
+	die("Trend dir: $opt{B} does not exist\n") if (! -d $opt{B});
+	$TrendDir=$opt{B};
+}
+
+if ($opt{trenddir}) {
+	die("Trend dir: $opt{trenddir} does not exist\n") if (! -d $opt{trenddir});
+	$TrendDir=$opt{trenddir};
+}
+
+# Header Title
+if ($opt{H}) {
+	$HeaderTitle=$opt{H};
+	$MailSubject=$opt{H};
+}
+elsif ($opt{header}) {
+	$HeaderTitle=$opt{header};
+	$MailSubject=$opt{header};
+}
+else {
+	$HeaderTitle='FWLOGSUM REPORT';
+	$MailSubject='FWLOGSUM REPORT';
+}
+
+#
+# Address Translation options
+#
+if ($opt{'x'}) {
+	if ($opt{'x'} eq 'b') {
+		$XlateType='both';
+	}
+	elsif ($opt{'x'} eq 't') {
+		$XlateType='translate';
+	}
+	else {
+		die "Invalid flag option.  Must be -xb -xt\n";
+	}
+}
+
+$XlateType='both' if $opt{xlateboth};
+$XlateType='translate' if $opt{xlate};
+
+#
+# Report Types
+#
+if ($opt{r}) {
+	if ($opt{r} eq 'a') {
+		$Header='Accepted Entries';
+		$Type="accept";	
+	}
+	elsif ($opt{r} eq 'd') {
+		$Header='Dropped Entries';
+		$Type="drop";	
+	}
+	elsif ($opt{r} eq 'r') {
+		$Header='Rejected Entries';
+		$Type="reject";	
+	}
+	elsif ($opt{r} eq 't') {
+		$Header='Attack Entries';
+		$Type="drop reject";	
+		$rptattacks=1;
+	}
+	elsif ($opt{r} eq 'x') {
+		$Header='Dropped and Rejected Entries';
+		$Type="drop reject";	
+	}
+	else {
+		die "Invalid flag option.  Must be -ra -rd -rl -rr -rx\n";
+	}
+} 
+
+if ($opt{rptaccepts}) {
+	$Header='Accepted Entries';
+	$Type="accept";	
+}
+
+if ($opt{rptdrops}) {
+	$Header='Dropped Entries';
+	$Type="drop";	
+}
+
+if ($opt{rptattacks}) {
+	$Header='Attack Entries';
+	$Type="drop reject";	
+	$rptattacks=1;
+}
+
+if ($opt{rptrejects}) {
+	$Header='Rejected Entries';
+	$Type="reject";	
+}
+
+if ($opt{rptdropsrejects}) {
+	$Header='Dropped and Rejected Entries';
+	$Type="drop reject";	
+}
+
+$MailSubject .= "$Header" if $FullSubjectLine;
+
+#
+# Gateway options
+#
+if ($opt{b}) {
+	if ($opt{b} eq 'i') {
+		$Inbound=1;
+		$Header .= "\nInbound Traffic";
+	}
+	elsif ($opt{b} eq 'o') {
+		$Outbound=1;
+		$Header .= "\nOutbound Traffic";
+	}
+	else {
+		die "Invalid flag option. Must be -bo or -bi\n";
+	}
+}
+
+if ($opt{inbound}) {
+	$Inbound=1;
+	$Header .= "\nInbound Traffic";
+}
+
+if ($opt{outbound}) {
+	$Outbound=1;
+	$Header .= "\nOutbound Traffic";
+}
+
+
+# 
+# Sort options
+#
+if ($opt{'s'}) {
+   SORT: {
+   	if ($opt{'s'} eq 'a') {$Sort='attack'; last SORT};
+   	if ($opt{'s'} eq 'c') {$Sort='count'; last SORT};
+   	if ($opt{'s'} eq 'f') {$Sort='fwhost'; last SORT};
+   	if ($opt{'s'} eq 'r') {$Sort='rule'; last SORT};
+   	if ($opt{'s'} eq 's') {$Sort='source'; last SORT};
+   	if ($opt{'s'} eq 'd') {$Sort='destination'; last SORT};
+   	if ($opt{'s'} eq 'v') {$Sort='service'; last SORT};
+
+   	die "Invalid sort flag.  Must be -sc -sf -sr -ss -sd -sv\n";
+   }
+}
+
+$Sort='attack' if $opt{sortattack};
+$Sort='count' if $opt{sortcount};
+$Sort='fwhost' if $opt{sortfw};
+$Sort='rule' if $opt{sortrule};
+$Sort='source' if $opt{sortsrc};
+$Sort='destination' if $opt{sortdest};
+$Sort='service' if $opt{sortsvc};
+
+$Header .= "\nSorted by $Sort";
+
+
+#
+# Output formats
+#
+if ($opt{c} or $opt{width}) {
+	if ($opt{c} == 80 or $opt{width} == 80) {
+		if ($ExcludeFWhost) {
+			$report='80a';
+		}
+		else {
+			$report='80b';
+		}
+
+	}
+	elsif ($opt{c} == 132 or $opt{width} == 132) {
+		if ($ExcludeFWhost) {
+       			$report='132a';
+		}
+		else {
+       			$report='132b';
+		}
+	}
+	else {
+		die "Column specification must must be 80 or 132\n"
+	}
+}
+
+$html=1 if ($opt{w} or $opt{html}); 
+
+$attackinfo=1 if ($opt{A} or $opt{attackinfo});
+
+#
+# Exclude/Include options
+#
+if ($opt{e} or $opt{excludesvc}) {
+	$ExcludeServices=$opt{e} if $opt{e};;
+	$ExcludeServices=$opt{excludesvc} if $opt{excludesvc};
+	$Header .= "\nExcluding services: ($ExcludeServices)";
+	$ExcludeServices =~ s/^/\^/;
+	$ExcludeServices =~ s/,/\$\|\^/g;
+}
+
+if ($opt{f} or $opt{excludesrcsvc}) {
+	if ($opt{p} or $opt{incsrcport}) {
+		$ExcludeSrcServices=$opt{f} if $opt{f};
+		$ExcludeSrcServices=$opt{excludesrcsvc} if $opt{excludesrcsvc};
+		$Header .= "\nExcluding source services: ($ExcludeSrcServices)";
+		$ExcludeSrcServices =~ s/^/\^/;
+		$ExcludeSrcServices =~ s/,/\$\|\^/g;
+	}
+	else {
+		print STDERR "-f flag requires -p flag\n" if $opt{f};	
+		print STDERR "--excludesrcsvc flag requires --invsrcport flag\n" if $opt{excludesrcsvc};	
+		Usage();
+	}
+}
+
+
+if ($opt{g} or $opt{restrictcount}) {
+	$RestrictCount=$opt{g} if $opt{g};
+	$RestrictCount=$opt{restrictcount} if $opt{restrictcount};
+	$Header .= "\nRestricting entries with count less than $RestrictCount";
+}
+
+if ($opt{i} or $opt{ignore}) {
+	$Ignore=$opt{i} if $opt{i};
+	$Ignore=$opt{ignore} if $opt{ignore};
+	$Header .= "\nIgnoring lines matching: \"$Ignore\"";
+	$IgnoreLines=0;
+}
+
+if ($opt{n} or $opt{excludeif}) {
+	$ExcludeIF=$opt{n} if $opt{n};
+	$ExcludeIF=$opt{excludeif} if $opt{excludeif};
+	$Header .= "\nIgnoring interface names matching: \"$ExcludeIF\"";
+	$ExcludeIFLines=0;
+}
+
+if ($opt{t} or $opt{includeonly}) {
+	$Search=$opt{t} if $opt{t};
+	$Search=$opt{includeonly} if $opt{includeonly};
+	$Header .= "\nOnly including lines matching: \"$Search\"";
+	$SearchLines=0;
+}
+
+#
+#  Service name/port options
+#
+$Svcname=1 if ($opt{y} or $opt{svcname});
+$Svcport=1 if ($opt{Y} or $opt{svcport});
+
+#
+# Mail option
+#
+if ($opt{'m'} or $opt{mail}) {
+	$MailUser=$opt{'m'} if $opt{'m'};
+	$MailUser=$opt{mail} if $opt{mail};
+	open(STDOUT,">$Temp") or die "Can not open temp file: $Temp $!\n";
+}
+
+
+#  
+# If no report format has been specified, set to default
+#
+if ((! $opt{c} and ! $opt{w}) and (! $opt{width} and ! $opt{html})) {
+	if ($Format == 80) {
+		if ($ExcludeFWhost) {
+			$report='80a';
+		}
+		else {
+			$report='80';
+		}
+	}
+	elsif ($Format == 132) {
+		if ($ExcludeFWhost) {
+			$report='132a';
+		}
+		else {
+			$report='132b';
+		}
+	}
+	elsif ($Format eq 'html') {
+		$html=1;
+	}
+	else {
+		die "Default format must be 80,132 or html\n";
+	}
+}
+
+
+#
+# Logexport log
+#
+if ($opt{l} or $opt{logexport}) {
+	$FWlog = $opt{l} if $opt{l};
+	$FWlog = $opt{logexport} if $opt{logexport};
+
+	if ($FWlog eq '-') {
+		$infile="-";
+	}
+	else {
+		die ("Can not open log file: $FWlog\n") if (! -f $FWlog);
+
+		if ($FWlog =~ /\.gz$/) {
+			$infile="$Gzip -dc $FWlog|";
+		}
+		else {
+			$infile = $FWlog;
+		}
+	}
+}
+
+#
+# FW1 raw log
+#
+if ($opt{L} or $opt{fw1log}) {
+	$FWlog=$opt{L} if $opt{L};
+	$FWlog=$opt{fw1log} if $opt{fw1log};
+	die "Can not read Log file $FWlog\n" if (! -r "$FWlog");
+	die ("$FWlog is not a FW1 log file.\n") if (! -B $FWlog);
+
+	if ($FWlog =~ /\.gz$/) {
+		$Compressed=1;
+		Vprint("Uncompressing $FWlog") if $Verbose;
+		system("$Gzip -d $FWlog");
+		die "Problems uncompressing $FWlog\n" if ($? != 0);
+		$FWlog =~ s/\.gz//;
+	}
+
+	die ("$FW1 not found.  Please check configuration PATH or specify a log export file\n") if (!-f $FW1);
+
+	if ($ResolveIP) {
+        	$infile = "$FW1 logexport -d '$Delimiter' -n -i $FWlog 2>$Null |";
+	}
+	else {
+        	$infile = "$FW1 logexport -d '$Delimiter' -i $FWlog 2>$Null |";
+	}
+}
+
+#
+# Set default command line if not already specified
+#
+if (! $infile) {
+	die ("$FW1 not found.  Please check configuration PATH or specify a logexport file\n") if (!-f $FW1);
+
+	$infile = "$FW1 logexport 2>$Null |";
+}
+
+#
+# Redirect STDOUT to output file (if specified)
+#
+open(STDOUT,">$Output") or die "Can not open $Output $!\n" if ("$Output");
+
+#
+# Print a HTML header if required
+#
+if ($html) {
+ 	$BarChart='black' unless $BarChart;	
+	$TableClass='TABLE';
+
+	if ($HtmlHeader) {
+		ReadHtml($HtmlHeader);
+	}
+	else {
+		HtmlHeader();
+	}
+}
+
+#
+# Unbuffer output
+#
+select(STDERR); $|=1;
+select(STDOUT); $|=1;
+
+#
+# Read in country codes and domains, if specified.
+#
+InitDomains() if ($IncludeDomains);
+
+# 
+# Initialise DNS cache, if specified.
+#
+InitDNSCache() if $CacheDNS;
+
+Vprint("Opening FW1 log using $infile") if $Verbose;
+
+#
+# Open pipe from "fw logexport" command or read from file
+#
+open(FWLOG,"$infile") or die "Cannot access firewall-1 log $!\n";
+
+unless ($html) {
+	if ($HeaderTitle) {
+		print "$HeaderTitle\n\n";
+	}
+	else {
+		print "FWLOGSUM REPORT\n\n";
+	}
+
+	print "$Header\n";
+}
+
+
+#
+# Process FW1 log
+#
+while (<FWLOG>) {
+
+	next if (/^$/);	 # Ignore blank lines
+
+	chomp;
+
+	# Breakup the header line into an array
+	if (/num.date.time/) {
+		(@Header)=split(/$Delimiter/);
+		$Lines++;
+		next;
+	}
+
+	# Create a hash based on the header fieldnames
+	(@LogLine) = split(/$Delimiter/);
+	$Field=0;
+
+	%logentry=();
+
+	foreach (@LogLine) {
+		$logentry{$Header[$Field]}=$_;
+		$Field++;
+	}
+
+	# Save start and end dates for the report
+	if (! $StartReportDate) {
+		$StartReportDate=$logentry{date};
+	}
+	else {
+		$EndReportDate=$logentry{date};
+	}
+
+	# Save start and finish times of data
+	if (! $StartTime) {
+		$StartTime=$logentry{'time'};
+	}
+	else {
+		$EndTime=$logentry{'time'};
+	}
+	
+	if ($Verbose) {
+		Vprint("processed $Lines lines.  Matched $Entries entries") if ($Lines % $Interval == 0);
+	}
+
+
+	# Increment total lines reported on
+	$Lines++;
+
+
+	# Ignore "control" messages
+	if ($logentry{type} =~ /control/) {
+		$Control++;
+		next ;
+	}
+
+
+	# Ignore any non standard log entries
+	unless ($logentry{type} =~ /log|account|alert/) {
+		$unknown++;
+		print STDERR "Unknown log entry - $_\n" if $Verbose;
+		next;
+	}
+
+	# Skip any non alert entries if the report type is only alerts
+	if ($rptattacks and $logentry{product} ne 'SmartDefense') {
+		$Ignored++;
+		next;
+	}
+
+	# Short logging does not include the rule number.
+	# Only relevant for FW1 versions 1.x-4.x
+	if ($logentry{rule} eq '' and $Type =~ /$logentry{action}/) {
+		$logentry{rule}='n/a';
+		$logentry{s_port}='n/a';
+	}
+
+	#
+	# Process attack info from SmartDefense
+	#
+	if ($logentry{attack}) {
+		$Attack{$logentry{attack}}++;
+		$Attacks++;
+
+		if ($logentry{'URL filter pattern detected'}) {
+			$AttackURL{$logentry{'URL filter pattern detected'}}++;
+			$AttackURLs++;
+		}
+	}
+
+	# Process any alert entries. 
+	#
+	# If the alert has miminal detail (eg: spoofalert), just count it
+	# and go to the next entry.
+	if ($logentry{type} =~ /alert/) {
+		$logentry{alert} =~ s/[!\[\]]//g;
+		$Alert++;
+		$AlertType{$logentry{alert}}++;
+		next unless $logentry{src};
+	}
+
+	# Count encrypt/decrypt entries
+	$Crypt++ if ($logentry{action} =~ /crypt/);
+
+	# Breakup inbound and outbound traffic
+	if ($logentry{'i/f_dir'} eq 'outbound') {
+		$OutTraffic++;
+		$OutTraffic_Bytes += $logentry{bytes} if ($logentry{type} eq 'account');
+		if ($Inbound) {
+			$Ignored++;
+			next;
+		}
+	}
+
+	if ($logentry{'i/f_dir'} eq 'inbound') {
+		$InTraffic_Bytes += $logentry{bytes} if ($logentry{type} eq 'account');
+		$InTraffic++;
+		if ($Outbound) {
+			$Ignored++;
+			next;
+		}
+	}
+
+	# Convert service port to name if specified
+	if ($Svcname) {
+		if ($logentry{proto} ne 'icmp') {
+			if ($logentry{service} =~ /\d/) {
+				$logentry{service} = Svcname($logentry{service},$logentry{proto});
+			}
+			if ($logentry{s_port} =~ /\d/) {
+				$logentry{s_port} = Svcname($logentry{s_port},$logentry{proto});
+			}
+		}
+	}
+
+	# Convert service name to port if specified
+	if ($Svcport) {
+		if ($logentry{proto} ne 'icmp') {
+			if ($logentry{service} =~ /[A-Za-z]/) {
+				$logentry{service} = Svcport($logentry{service},$logentry{proto});
+			}
+			if ($logentry{s_port} =~ /[A-Za-z]/) {
+				$logentry{s_port} = Svcport($logentry{s_port},$logentry{proto});
+			}
+		}
+	}
+
+	# Exclude specified services, if specified
+	if ($ExcludeServices) {
+		if ($logentry{service} =~ /$ExcludeServices/) {
+			$Ignored++;
+			if ($Exclude{$logentry{service}}) {
+				$Exclude{$logentry{service}}++;
+			}
+			else {
+				$Exclude{$logentry{service}}=1;
+			}
+			next;
+		}
+	}
+
+	
+
+	# Convert src/dst address/port to use translated address/port
+	if ($XlateType and $logentry{xlatesrc}) {
+
+		if ($ResolveIP) {
+			$logentry{xlatesrc}=ResolveIPAddress($logentry{xlatesrc});
+			$logentry{xlatedst}=ResolveIPAddress($logentry{xlatedst});
+		}
+
+		if ($XlateType eq 'both') {
+			$logentry{src} .= "/$logentry{xlatesrc}" if ($logentry{src} ne $logentry{xlatesrc});
+			$logentry{dst} .= "/$logentry{xlatedst}" if ($logentry{dst} ne $logentry{xlatedst});
+			$logentry{service} .= "/$logentry{xlatedport}" if ($logentry{service} ne $logentry{xlatedport});
+			$logentry{s_port} .= "/$logentry{xlatesport}" if ($logentry{s_port} ne $logentry{xlatesport});
+		}
+		elsif ($XlateType eq 'translate') {
+			$logentry{src}="$logentry{xlatesrc}";
+			$logentry{dst}="$logentry{xlatedst}";
+			$logentry{service}="$logentry{xlatedport}";
+			$logentry{s_port}="$logentry{xlatesport}";
+		}
+	}
+
+
+	unless (($logentry{action} eq 'drop' and $Type =~ /drop/) or
+		($logentry{action} eq 'reject' and $Type =~ /reject/) or
+		($logentry{action} =~ /accept|crypt/ and $Type =~ /accept/)) {
+			next;
+	}
+
+
+	# Exclude specified source services, if specified
+	if ($ExcludeSrcServices) {
+		if ($logentry{s_port} =~ /$ExcludeSrcServices/) {
+			$Ignored++;
+			if ($ExcludeSrc{$logentry{s_port}}) {
+				$ExcludeSrc{$logentry{s_port}}++;
+			}
+			else {
+				$ExcludeSrc{$logentry{s_port}}=1;
+			}
+			next;
+		}
+	}
+
+	# Pre-Resolve IP addresses.  This allows filters to work on
+	# resolved names rather than IP addresses.
+	if ($ResolveIP) {
+		$logentry{src}=ResolveIPAddress($logentry{src});
+		$logentry{dst}=ResolveIPAddress($logentry{dst});
+	}
+
+	# Create the key hash with the matched data
+	CreateKey();
+
+	# Ignore any specified entries
+	if ($Ignore) {
+		if ($key =~ /$Ignore/) {
+			$Ignored++;
+			$IgnoreLines++;
+			next;
+		}
+	}
+
+	# Ignore any specified interfaces
+	if ($ExcludeIF) {
+		if ($logentry{'i/f_name'} =~ /$ExcludeIF/) {
+			$Ignored++;
+			$ExcludeIFLines++;
+			next;
+		}
+	}
+
+	# Only let through specified entries
+	if ($Search) {
+		if ($key !~ /$Search/) {
+			$Ignored++;
+			$SearchLines++;
+			next;
+		}
+	}
+
+
+	# Resolve IP address in the key
+	if ($PostResolveIP) {
+		if ($key =~ /\d+.\d+\.\d+\.\d+/) {
+			my ($src,$dst) = $key =~ /\S+\s+(\S+)\s+(\S+)/;
+			$src =~ s/\(.*//;	# Remove src port
+			my $newsrc = ResolveIPAddress($src);
+			my $newdst = ResolveIPAddress($dst);
+
+			$key =~ s/$src/$newsrc/;
+			$key =~ s/$dst/$newdst/;
+			$logentry{src} = $newsrc;
+			$logentry{dst} = $newdst;
+		}
+	}
+		
+			
+
+	# Save start and end dates for matched data
+	if (! $StartMatchedReportDate) {
+		$StartMatchedReportDate=$logentry{date};
+	}
+	else {
+		$EndMatchedReportDate=$logentry{date};
+	}
+
+	# Save times for matched data
+	if (! $StartMatchedTime) {
+		$StartMatchedTime=$logentry{'time'};
+	}
+	else {
+		$EndMatchedTime=$logentry{'time'};
+	}
+
+	# Increment counter for number of entries reported on.
+	$Entries++;
+
+	# Increment counter for matched entries based on key
+	$Matches{$key}++;
+
+	# Increment counter for Translated addresses/ports
+	if ($logentry{xlatesrc}) {
+		$XlateAddr++;
+		$XlatePort++ if (($logentry{service} ne $logentry{xlatedport}) or ($logentry{s_port} ne $logentry{xlatesport}));
+	}
+
+	$RuleNo=$logentry{rule};
+	$SourceName=$logentry{src};
+	$DestinationName=$logentry{dst};
+	$DateName=$logentry{date};
+
+	if ($logentry{proto} eq 'icmp') {
+		$ServiceType="$logentry{'icmp-type'}/$logentry{'icmp-code'}";
+	}
+	else {
+		$ServiceType=$logentry{service};
+	}
+
+	$Service{"$logentry{proto}($ServiceType)"}++;
+
+
+	# Keep track of domains, if specified
+	if ($IncludeDomains) {
+		$Description=LookupDomain($logentry{src});
+		$SrcDomain{$Description}++;
+		$SrcDomain_Bandwidth{$Description}+=$logentry{bytes} if ($logentry{type} eq 'account');
+
+		$Description=LookupDomain($logentry{dst});
+		$DestDomain{$Description}++;
+		$DestDomain_Bandwidth{$Description} += $logentry{bytes} if ($logentry{type} eq 'account');
+	}
+
+	$Rule{$RuleNo}++;
+	$Source{$SourceName}++;
+	$Destination{$DestinationName}++;
+	$Daily{$DateName}++;
+	$FWhost{$logentry{orig}}++;
+
+	$Interface="$Interfaces{\"$logentry{orig} $logentry{'i/f_name'}\"}";
+	$Interface="$logentry{orig} $logentry{'i/f_name'}" unless $Interface;
+	$Networks{"$Interface ($logentry{'i/f_dir'})"}++;
+	
+	# Only applicable to account logs
+	if ($logentry{type} eq "account") {
+		$Bytes += $logentry{bytes};
+		$FWhost_Bandwidth{$logentry{orig}} += $logentry{bytes};
+		$Rule_Bandwidth{$RuleNo} += $logentry{bytes};
+		$Source_Bandwidth{$SourceName} += $logentry{bytes};
+		$Destination_Bandwidth{$DestinationName} += $logentry{bytes};
+		$Service_Bandwidth{"$logentry{proto}($ServiceType)"} += $logentry{bytes};
+		$Daily_Bandwidth{$DateName} += $logentry{bytes};
+		$Networks_Bandwidth{"$Interface ($logentry{'i/f_dir'})"} += $logentry{bytes};
+	}
+
+	# Calculate time period
+	($Hour = $logentry{time}) =~ s/:.*//g;
+	$To=$Hour;
+	$To++;
+	$To=0 if ($To == 25);	
+
+	if ($Hour < 13 )  {
+		if ($Clock24) {
+			$Duration="${Hour}:00-";
+		}
+		else {
+			$Duration="${Hour}AM-";
+		}
+	}
+	else {
+		if ($Clock24) {
+			$Duration="${Hour}:00-";
+		}
+		else {
+			$Hour=$Hour-12;
+			$Duration="${Hour}PM-";
+		}
+	}
+
+	if ($To < 13 )  {
+		if ($Clock24) {
+			$Duration .= "${To}:00";
+		}
+		else {
+			$Duration .= "${To}AM";
+		}
+	}
+	else {
+		if ($Clock24) {
+			$Duration .= "${To}:00";
+		}
+		else {
+			$To=$To-12;
+			$Duration .= "${To}PM";
+		}
+	}
+
+	$Time{$Duration}++;
+
+	$Hourly_Bandwidth{$Duration} += $logentry{bytes} if ($logentry{type} eq 'account');
+}
+
+close FWLOG;
+
+#
+# Recompress log if needed.
+#
+if ($Compressed) {
+	Vprint("Recompressing $FWlog");
+	system("$Gzip $FWlog");
+}
+
+Vprint("Sorting matched data") if $Verbose;
+
+#
+# Put all matched entries into an array and sort by specified sort key
+#
+while (($key,$value) = each %Matches) {
+	(@logentry) = split(/\t/,$key);
+	if (($RestrictCount < $value) or (! $RestrictCount)) {
+		if ($ExcludeFWhost) {
+			$line = join("\t",$logentry[1],$logentry[2],$logentry[3],$value,$logentry[4],$logentry[5],$logentry[6]);
+		}
+		else {
+			$line = join("\t",$logentry[0],$logentry[1],$logentry[2],$logentry[3],$value,$logentry[4],$logentry[5],$logentry[6]);
+		}
+
+		$line .= "\t$logentry[7]" if $attackinfo;
+
+		push(@data,$line);
+        	push(@datakeys,$value) if ($Sort eq 'count');
+        	push(@datakeys,$logentry[0]) if ($Sort eq 'fwhost');
+        	push(@datakeys,$logentry[1]) if ($Sort eq 'source');
+        	push(@datakeys,$logentry[2]) if ($Sort eq 'destination');
+        	push(@datakeys,$logentry[3]) if ($Sort eq 'service');
+        	push(@datakeys,$logentry[4]) if ($Sort eq 'rule');
+        	push(@datakeys,$logentry[5]) if ($Sort eq 'attack');
+	}
+	else {
+		$RestrictIgnored += $value;
+	}
+
+}
+
+#
+# Close DNS cache
+#
+untie %dnscache if $CacheDNS;
+
+#
+# Sort array 
+#
+if ($Sort eq 'count' or $Sort eq 'rule') {
+	@sortdata=@data[sort DataKeys_Numerically $[..$#data];
+}
+else {
+	@sortdata=@data[sort DataKeys $[..$#data];
+}
+
+#
+# Display lines processed and report date
+#
+$EndReportDate=$StartReportDate unless $EndReportDate;
+chomp $StartReportDate;
+chomp $EndReportDate;
+
+# Reduce Lines by one for the field headers;
+$Lines--;
+
+#
+# Make sure we have start and end dates and format them nicely
+#
+if ($StartReportDate) {
+	($Day,$Month,$Year) = $StartReportDate =~ m/(\d+)([A-z]+)(\d+)/;
+	$StartReportDate="$Day $Month $Year";
+}
+else {
+	$StartReportDate='Unknown date' unless $StartReportDate;
+}
+
+if ($EndReportDate) {
+	($Day,$Month,$Year) = $EndReportDate =~ m/(\d+)([A-z]+)(\d+)/;
+	$EndReportDate="$Day $Month $Year";
+}
+else {
+	$EndReportDate='Unknown date' unless $EndReportDate;
+}
+
+if ($StartMatchedReportDate) {
+	($Day,$Month,$Year) = $StartMatchedReportDate =~ m/(\d+)([A-z]+)(\d+)/;
+	$StartMatchedReportDate="$Day $Month $Year";
+}
+else {
+	$StartMatchedReportDate='Unknown date' unless $StartMatchedReportDate;
+}
+
+if ($EndMatchedReportDate) {
+	($Day,$Month,$Year) = $EndMatchedReportDate =~ m/(\d+)([A-z]+)(\d+)/;
+	$EndMatchedReportDate="$Day $Month $Year";
+}
+else {
+	$EndMatchedReportDate='Unknown date' unless $EndMatchedReportDate;
+}
+
+if ($html) {
+	$Header =~ s/\n/<br>\n/g;
+	print qq(<a name="top"></a>\n);
+	print qq(<table border="0" cellpadding="5" cellspacing="5" class="header">\n);
+	print qq(<tr><td>\n);
+	print qq($Header<br>\n);
+	print qq(Report generated on: $Date<br>\n);
+	print qq(Period for report data: $StartReportDate at $StartTime to $EndReportDate at $EndTime<br>\n);
+	print qq(Period for matched data: $StartMatchedReportDate at $StartMatchedTime to $EndMatchedReportDate at $EndMatchedTime\n);
+	print qq(</td></tr></table>\n<p></p>\n\n);
+
+	print qq(<table border="2" class="header">\n);
+
+	HeaderRow('Total entries processed',$Lines);
+	HeaderRow('Entries matched on',$Entries);
+	HeaderRow('Inbound traffic',$InTraffic);
+	HeaderRow('Outbound traffic',$OutTraffic);
+
+	if ($Bytes) {
+		$MBytes=Megabytes($InTraffic_Bytes);
+		HeaderRow('Inbound Traffic',"$MBytes MB");
+		$MBytes=Megabytes($OutTraffic_Bytes);
+		HeaderRow('Outbound Traffic',"$MBytes MB");
+		$MBytes=Megabytes($Bytes);
+		HeaderRow('Total Traffic',"$MBytes MB");
+	}
+
+	HeaderRow('Control Messages',$Control);
+	HeaderRow('Entries Ignored',$Ignored);
+	HeaderRow('Alert Entries',$Alert);
+	HeaderRow('Attack Types',$Attacks);
+	HeaderRow('Unique Attack URLs',$AttackURLs);
+	HeaderRow('Encrypted/Decrypted Entries',$Crypt);
+	HeaderRow('Translated Addresses',$XlateAddr) if ($XlateAddr > 0);
+	HeaderRow('Translated Ports',$XlatePort) if ($XlatePort > 0);
+	HeaderRow('Restricted entries not displayed',$RestrictIgnored) if ($RestrictIgnored > 0);
+	HeaderRow('Unknown Entries',$unknown);
+	
+	print qq(</table>\n<p></p>\n);
+
+	ColourIndex();
+	
+	unless ($Summary) {
+		print qq(<p><a href="#Summary">View Report Summary</a><p>\n);
+		TableHeader();
+	}
+}
+else {
+	print "Report generated on: $Date\n";
+	print "Period for report data: $StartReportDate at $StartTime to $EndReportDate at $EndTime\n";
+	print "Period for matched data: $StartMatchedReportDate at $StartMatchedTime to $EndMatchedReportDate at $EndMatchedTime\n\n";
+
+	print "Total entries processed: $Lines\n";
+	print "Entries matched on: $Entries\n";
+	print "Inbound traffic: $InTraffic\n";
+	print "Outbound traffic: $OutTraffic\n";
+	print "Control Messages: $Control\n";
+	print "Alert Entries: $Alert\n";
+	print "Encrypted/Decrypted Entries: $Crypt\n";
+	print "Unknown entries $unknown\n";
+
+	if ($Bytes) {
+		$MBytes=Megabytes($InTraffic_Bytes);
+		print "Inbound Traffic: $MBytes MB\n";
+		$MBytes=Megabytes($OutTraffic_Bytes);
+		print "Outbound Traffic: $MBytes MB\n";
+		$MBytes=Megabytes($Bytes);
+		print "Total traffic (matched): $MBytes MB\n";
+	}
+
+	print "Entries ignored: $Ignored\n";
+	print "Attack Types: $Attacks\n";
+	print "Unique Attack URLs: $AttackURLs\n";
+	print "Translated addresses: $XlateAddr\n" if ($XlateAddr > 0);
+	print "Translated ports: $XlatePort\n" if ($XlatePort > 0);
+	print "Restricted entries not displayed: $RestrictIgnored\n" if ($RestrictIgnored > 0);
+	print "\n\n";
+
+	BodyHeader() unless $Summary;
+}
+
+#
+# Write out sorted data according to appropriate format
+#
+
+$Counter=1;
+
+unless ($Summary) {
+	foreach (@sortdata) {
+  		if ($html and $TableBreak > 0 and ($Counter % $TableBreak == 0)) {
+			print qq(</table>\n);
+			print qq(<table border="5" width="100%"><tr>\n);
+			print qq(<td height="0" width="13%"></td>\n) unless $ExcludeFWhost;
+			print qq(<td height="0" width="20%"></td>\n);
+			print qq(<td height="0" width="20%"></td>\n);
+			print qq(<td height="0" width="20%"></td>\n);
+			print qq(<td height="0" width="7%"></td>\n);
+			print qq(<td height="0" width="5%"></td>);
+			print qq(<td height="0" width="15%" class="th"></td>) if $attackinfo;
+			print qq(</tr>\n);
+		}
+
+		# Reset table class entry to default
+		$TableClass='table';
+
+		# Alert entries are in the form ![xxx]
+		$TableClass='tablealert' unless (/noalert/);
+
+		# Encrypt/Decrypt entries
+		$TableClass='tablecrypt' if (/encrypt|decrypt/);
+
+		# Highlight entries
+		if ($HighlightLine and $html) {
+			$TableClass='tablehighl' if (/$HighlightLine/);
+		}
+
+       		@line=split(/\t/);
+
+		if ($html) {
+			if ($ExcludeFWhost) {
+				print qq(<tr class="$TableClass"><td>$line[0]</td><td>$line[1]</td><td>$line[2]</td><td align="right">$line[3]</td><td align="right">$line[4]</td>);
+				print qq(<td>$line[6]</td>) if $attackinfo;
+				print "</tr>\n";
+			}
+			else {
+				print qq(<tr class="$TableClass"><td>$line[0]</td><td>$line[1]</td><td>$line[2]</td><td>$line[3]</td><td align="right">$line[4]</td><td align="right">$line[5]</td>);
+				print qq(<td>$line[8]</td>) if $attackinfo;
+				print "</tr>\n";
+			}
+		}
+		else {
+			printf "$formats{$report}\n",@line;
+		}
+
+		$Counter++;
+	}
+}
+
+#
+# Reset colors if Highlight (-a) or alerts on last row
+#
+$TableClass='table';
+
+#
+# Force a form feed if non-HTML
+#
+if ($html) {
+	print qq(</table>\n);
+	print qq(<p></p><a name="Summary"></a>\n<h2>Summary Information</h2>\n);
+}
+else {
+	print "\n\nSUMMARY INFORMATION\n\n";
+}
+
+#
+# Output the summary information
+#
+PrintSummary(FWhost,"Firewall Server: Top $Top") unless $ExcludeFWhost;
+PrintSummary(FWhost_Bandwidth,"Firewall Server: Top $Top") if ($Bytes and ! $ExcludeFWhost);
+
+PrintSummary(Source,"Users/Source Addresses: Top $Top");
+PrintSummary(Source_Bandwidth,"Users/Source Bandwidth: Top $Top") if $Bytes;
+
+PrintSummary(Destination,"Users/Destination Addresses: Top $Top");
+PrintSummary(Destination_Bandwidth,"Users/Destination Bandwidth: Top $Top") if $Bytes;
+
+PrintSummary(Service,"Service Usage: Top $Top");
+PrintSummary(Service_Bandwidth,"Service Bandwidth: Top $Top") if $Bytes;
+
+PrintSummary(Rule,"Rule Usage: Top $Top");
+PrintSummary(Rule_Bandwidth,"Rule Usage Bandwidth: Top $Top") if $Bytes;
+
+PrintSummary(Attack,"Attack Types: Top $Top") if ($Attacks > 0);
+PrintSummary(AttackURL,"Attack URLs: Top $Top") if ($AttackURLs > 0);
+
+PrintSummary(Networks,"Network Interface Usage: Top $Top");
+PrintSummary(Networks_Bandwidth,"Network Interface Bandwidth: Top $Top") if $Bytes;
+
+PrintSummary(AlertType,"Alert Types: Top $Top") if ($Alert > 0);
+
+if ($IncludeDomains) {
+	PrintSummary(SrcDomain,"Source Domains: Top $Top");
+	PrintSummary(SrcDomain_Bandwidth,"Source Domains Bandwidth: Top $Top") if $Bytes;
+	PrintSummary(DestDomain,"Destination Domains: Top $Top");
+	PrintSummary(DestDomain_Bandwidth,"Destination Domains Bandwidth: Top $Top") if $Bytes;
+}
+
+PrintSummary(Daily,"Daily Usage");
+PrintSummary(Daily_Bandwidth,"Daily Bandwidth") if ($Bytes);
+
+if ($Clock24) {
+	$Top=24;
+	PrintSummary(Time,"24 Hour Period");
+	PrintSummary(Hourly_Bandwidth,"24 Hour Bandwidth") if ($Bytes);
+}
+else {
+	PrintSummary(Time,"Hourly Periods: Top $Top");
+	PrintSummary(Hourly_Bandwidth,"Hourly Bandwidth") if ($Bytes);
+}
+
+#
+# If any services have been excluded, report the amount.
+#
+if ($ExcludeServices) {
+	if ($html) {
+		print qq(<p><h2>Excluded Services</h2>\n);
+		print qq(<table border="5"><tr class="th">\n);
+		print qq(<td>Service</td>\n);
+		print qq(<td>Count</td>\n);
+		print qq(<td>Of Entries</td>\n);
+		print qq(<td>%</td></tr>\n);
+	}
+	else {
+		print "\n\nExcluded Services\n";
+		print "=======================================================\n";
+	}
+	while (($Entry,$Count) = each %Exclude) {
+		$Percent=($Count / ($Entries + $Ignored)) * 100;
+		write;
+	 
+	}
+}
+
+if ($ExcludeSrcServices) {
+	if ($html) {
+		print qq(<p><h2>Excluded Source Services</h2>\n);
+		print qq(<table border="5"><tr class="th">\n);
+		print qq(<td>Service</td>\n);
+		print qq(<td>Count</td>\n);
+		print qq(<td>Of Entries</td>\n);
+		print qq(<td>%</td></tr>\n);
+	}
+	else {
+		print "\n\nExcluded Source Services\n";
+		print "=======================================================\n";
+	}
+
+	while (($Entry,$Count) = each %ExcludeSrc) {
+		$Percent=($Count / ($Entries + $Ignored)) * 100;
+		write;
+	}
+}
+
+print "</table>\n" if ($html);
+
+#
+# Summarise any ignored entries
+#
+if ($Ignore) {
+	if ($html) {
+		print "<p>Ignored $IgnoreLines entries matching: <b>$Ignore</b>\n";
+	}
+	else {
+		print "\nIgnored $IgnoreLines entries matching $Ignore\n"; 
+	} 
+}
+
+if ($ExcludeIF) {
+	if ($html) {
+		print "<p>Excluding $ExcludeIFLines entries matching: <B>$ExcludeIF</b>\n";
+	}
+	else {
+		print "\nIgnored $ExcludeIFLines entries matching $ExcludeIF\n"; 
+	} 
+}
+
+if ($Search) {
+	if ($html) {
+		print "<p>Ignored $SearchLines entries not matching: <b>$Search</b>\n";
+	}
+	else {
+		print "Ignored $SearchLines entries not matching $Search\n" if ($Search);
+	}
+}
+
+
+#
+# print HTML footer if required
+# 
+if ($html) {
+	print qq(<p><a href="#Top">Top of Report</a><p>\n);
+
+	if ($HtmlFooter) {
+		ReadHtml($HtmlFooter);
+	}
+	else {
+		HtmlFooter();
+	}
+}
+else {
+	print "\n\nProduced by fwlogsum Version: $version\n";
+	print "http://www.ginini.com/software/fwlogsum/\n";
+}
+
+#
+# Mail results if -m specified
+#
+if ($MailUser) {
+	open(MAIL,"|$MailProg") or die "Can not access $MailProg $!\n";
+	open(TEMP,"$Temp") or die "Can not open $Temp $!\n";
+	print MAIL "To: $MailUser\n";
+	print MAIL "Subject: $MailSubject\n";
+
+	if ($html) {
+		print MAIL qq(Content-Type: text/html;\n);
+		print MAIL qq(\tcharset="iso-8859-1"\n);
+	}
+
+	while (<TEMP>) {
+		print MAIL;
+	}
+	
+	close (TEMP);
+	close (MAIL);
+	unlink($Temp);
+}
+
+#
+# Close STDOUT if we were redirecting to an output file
+#
+close(STDOUT) if $Output;
+
+#=============================================================================
+# 				START OF SUBROUTINES
+#-----------------------------------------------------------------------------
+#
+# The Key is made up from: 
+#
+# "FW1 Host, Src, Destination, Protocol(Service Name), Rule"
+# 
+# If source port number is specified the key is:
+#
+# "FW1 Host, Src(Service Name), Destination, Protocol(Service Name), Rule"
+#
+# Broadcasts and icmp entries have different formats to the rest.    
+#
+
+sub CreateKey
+{
+	# Convert the FW host origin to shortname in uppercase
+	$logentry{orig} = ResolveIPAddress($logentry{orig}) if ($logentry{orig} =~ /\d+\.\d+\.\d+\.\d+/);
+
+	if ($logentry{orig} !~ /(\d+\.\d+\.\d+\.\d+)/) {
+		$logentry{orig} =~ s/\..*//;
+		$logentry{orig} =~ tr/a-z/A-Z/;
+	}
+
+	# Remove whitespaces from valid address entries, as the key is 
+	# space delimited.
+	$logentry{src} =~ s/(\w+)\s\(Valid Address\)/$1\[Valid_Address\]/;
+	$logentry{dst} =~ s/(\w+)\s\(Valid Address\)/$1\[Valid_Address\]/;
+
+	# Populate any blank fields
+	$logentry{dst}='No-address' unless $logentry{dst};
+	$logentry{src}='No-address' unless $logentry{src};
+	$logentry{service}='No-service' unless $logentry{service};
+	$logentry{s_port}='No-service' unless $logentry{s_port};
+
+
+	if ($SrcPortNum) {
+		if ($logentry{proto} eq 'icmp') {
+			$key = "$logentry{orig}\t$logentry{src}($logentry{s_port})\t$logentry{dst}\t$logentry{proto}($logentry{'icmp-type'}/$logentry{'icmp-code'})\t$logentry{rule}";
+		}
+		else {
+			$key = "$logentry{orig}\t$logentry{src}($logentry{s_port})\t$logentry{dst}\t$logentry{proto}($logentry{service})\t$logentry{rule}";
+		}
+	}
+	else {
+		if ($logentry{proto} eq 'icmp') {
+			$key = "$logentry{orig}\t$logentry{src}\t$logentry{dst}\t$logentry{proto}($logentry{'icmp-type'}/$logentry{'icmp-code'})\t$logentry{rule}";
+		}
+		else {
+			$key = "$logentry{orig}\t$logentry{src}\t$logentry{dst}\t$logentry{proto}($logentry{service})\t$logentry{rule}";
+		}
+	}
+
+	# 
+	# If there is an alert entry, add the type to the key
+	#
+	($logentry{alert}) = 'noalert' unless $logentry{alert};
+	$key .= "\t$logentry{alert}";
+
+	# Add action so we can detect encrypt/decrypt entries
+	$key .= "\t$logentry{action}"; 
+
+	# Add Attack info if specified
+	if ($attackinfo) {
+		if ($logentry{attack}) {
+			$key .= "\t$logentry{attack}";
+		}
+		else {
+			$key .= "\tn/a";
+		}
+	}
+
+}
+
+	
+#-----------------------------------------------------------------------------
+# Read domains into a hash for later lookups
+sub InitDomains {
+	open DOMAINS,$DomainFile or die "Can not open domain file: $DomainFile $!\n";
+
+	$MaxDomain=0;
+
+	while (<DOMAINS>) {
+		next if (/^$/ or /^#/);
+	
+		($Code,$Description) = /(^\S+)\s+(.*)/;
+		$Code =~ tr/a-z/A-Z/;
+		$DomainName{$Code}=$Description;
+	}
+
+	close(DOMAINS);
+
+#	open SITEDOMAINS,$SiteDomainFile or die "Can not open site domain file: $SiteDomainFile $!\n";
+
+#	while (<SITEDOMAINS>) {
+#		next if (/^$/ or /^#/);
+#
+#		($Code,$Description) = /(^\S+)\s+(.*)/;
+#		$Code =~ tr/a-z/A-Z/;
+#		$SiteDomainName{$Code}=$Description;
+#	}
+#
+#	close(SITEDOMAINS);
+		
+
+}
+
+#-----------------------------------------------------------------------------
+# Lookup domain description
+sub LookupDomain {
+	my $domain=shift;
+
+	return "Unresolved" if ($domain =~ /(\d+\.\d+\.\d+\.\d+)/);
+
+	$domain =~ tr/a-z/A-Z/;
+	$domain =~ s/.*\.//;
+
+	if ($DomainName{$domain}) {
+		return $DomainName{$domain};
+	}
+	else {
+		return "Unknown";
+	}
+}
+	
+#-----------------------------------------------------------------------------
+sub InitDNSCache {
+	Vprint("Initialising DNS cache") if $Verbose;
+
+	tie(%dnscache,'AnyDBM_File',"$DNScachefile",O_RDWR|O_CREAT,0600) or die "Can not open $DNScachefile $!\n";
+	#
+	# Expire old entries
+	#
+	my $now = time();
+	my $expiry = $DNSexpire * 24 * 60 * 60;
+
+	while (my ($ip,$value) = each %dnscache) {
+		my ($host,$age) = split(/,/,$value);
+		delete $dnscache{$ip} if ($now > ($age + $expiry));
+	}
+}
+	
+#-----------------------------------------------------------------------------
+sub ResolveIPAddress {
+	my $Address=shift;
+	my $Hostname;
+
+	return unless $Address;
+
+	if ($Address =~ /(\d+\.\d+\.\d+\.\d+)/) {
+        	return $Host{$Address} if ($Host{$Address});
+
+		if ($CacheDNS and $dnscache{$Address}) {
+			($Hostname,undef) = split(/,/,$dnscache{$Address});
+			return $Hostname;
+		}
+			
+		$Hostname = gethostbyaddr(inet_aton($Address),AF_INET) or $Hostname="$Address";
+		$Host{$Address}=$Hostname;
+		$dnscache{$Address}=join(',',$Hostname,time()) if $CacheDNS;		
+
+	        return $Hostname;
+    	}
+	else {
+		$Host{$Address}=$Address;
+		$dnscache{$Address}=join(',',$Address,time()) if $CacheDNS;		
+		return $Address;
+	}
+}
+
+#-----------------------------------------------------------------------------
+sub Svcname {
+	my ($port,$proto)=@_;
+
+	my ($name,undef,undef,undef) = getservbyport($port,$proto);
+
+	return $name || $port;
+}
+
+#-----------------------------------------------------------------------------
+sub Svcport {
+	my ($name,$proto)=@_;
+
+	my ($port,undef,undef,undef) = getservbyname($name,$proto);
+
+	return $port || $name;
+}
+
+#-----------------------------------------------------------------------------
+sub Megabytes {
+	my $Bytes=shift;
+
+	$Bytes/=1048576;
+	return(int($Bytes));
+}
+
+#-----------------------------------------------------------------------------
+# Print report summaries and save trend data
+sub PrintSummary {
+	my($Column,$Title)=@_;
+
+	($ColumnTitle=$Column) =~ s/_Bandwidth//;
+
+   	# If a trend directory has been specified, open a trend database.
+	if ($TrendDir) {
+		tie(%trend,'AnyDBM_File',"$TrendDir/$Column",O_RDWR|O_CREAT,0600) or die "Can not open $TrendDir/$Column $!\n";
+	}
+
+	$Title="$Column Entries: Top $Top" unless $Title;
+
+	@data=();
+	@datakeys=();
+
+	while (($key,$value) = each %$Column) {
+
+		if ($TrendDir) {
+			if (defined $trend{$key}) {
+				$entries=$trend{$key};
+				$count=$entries + $value;
+				$trend{$key}=$count;
+			}
+			else {
+				$trend{$key}=$value;
+			}
+		}
+			
+		$line="$key $value";
+		push(@data,$line);
+
+		if ($Clock24 and ($Column =~ /Time|Daily|Hourly_Bandwidth|Daily_Bandwidth/)) {
+       	 		push(@datakeys,$key);
+		}
+		else {
+       	 		push(@datakeys,$value);
+		}
+	}
+
+	if ($TrendDir) {
+		untie %trend or warn "Could not untie $TrendDir/$Column $!\n";
+	}
+
+	if ($Clock24 and ($Column =~ /Time|Daily|Hourly_Bandwidth|Daily_Bandwidth/)) {
+		@sortdata=@data[sort DataKeys_Incr_Numerically $[..$#data];
+	}
+	else {
+		@sortdata=@data[sort DataKeys_Numerically $[..$#data];
+	}
+
+	$Counter=1;
+	$TotalEntries=$#sortdata + 1;	
+
+	$Title="$Title of $TotalEntries" unless ($Column =~ /Time|Daily|Hourly_Bandwidth|Daily_Bandwidth/);
+	if ($html) {
+		print qq(\n<p></p><a name="$Column"></a>\n);
+		print qq(<table border="5">\n);
+		print qq(<tr class="stitle" rowspan="2"><td colspan="4" align="center">$Title</td><tr>\n);
+		print qq(<tr class="th"><td>$ColumnTitle</td>\n);
+
+		if ($Column =~ /Bandwidth/) {
+			print "<td>Megabytes</td>\n";
+		}
+		else {
+			print "<td>Count</td>\n";
+		}
+
+		print "<td>Of Total</td>\n";
+		print "<td>%</td></tr>\n";
+	}
+	else {
+		print "\n$Title\n";
+		print "=======================================================\n";
+	}
+
+	foreach (@sortdata) {
+		last if $Counter > $Top;
+		($Entry,$Count)=/(.*) (\d+$)/;
+
+		# Create a link to the rule file
+		if ($Column eq 'Rule' or $Column eq 'Rule_Bandwidth') {
+                	$Entry = "Rule $Entry";
+		}
+
+               
+		if ($Column =~ /Bandwidth/) {
+			next if ($Count == 0);
+			$Percent=($Count/$Bytes) * 100;
+			$Count/=1048576;
+		}
+		else {
+			if ($Count == 0 or $Entries == 0) {
+				$Percent=0;
+			}
+			else {
+				$Percent=($Count/$Entries) * 100;
+			}
+		}
+
+		$Percent = sprintf("%2.2f",$Percent);
+
+		if ($html) {
+			$percentwidth=$Percent * 2;
+			print qq(<tr class="$TableClass"><td>$Entry</td><td align="right">$Count</td><td align="right">$Percent%</td><td width="200" align="left"><hr class="bar" width="$percentwidth"></td></tr>\n);
+		}
+		else {
+			printf "%-40s %6d %6s%\n",$Entry,$Count,$Percent;
+		}
+
+		$Counter++;
+	}
+
+	print "</table>\n<p></p>\n" if $html;
+}
+
+#-----------------------------------------------------------------------------
+sub DataKeys_Numerically { 
+	$datakeys[$b] <=> $datakeys[$a]; 
+}
+
+#-----------------------------------------------------------------------------
+sub DataKeys_Incr_Numerically { 
+	$datakeys[$a] <=> $datakeys[$b]; 
+}
+
+#-----------------------------------------------------------------------------
+sub DataKeys { 
+	$datakeys[$a] cmp $datakeys[$b]; 
+}
+
+#-----------------------------------------------------------------------------
+# Read HTML template
+sub ReadHtml {
+	my $Include=shift;
+
+	die "Can not open $Include\n" if (! -f $Include);
+
+	if (-x $Include) {
+		system($Include);
+	}
+	else {
+		open(TEMPLATE,$Include) or die "Can not open $Include $!\n";
+		print <TEMPLATE>;
+		close(TEMPLATE);
+	}
+}
+
+#-----------------------------------------------------------------------------
+# Standard HTML header
+sub HtmlHeader {
+
+	my $title = $HeaderTitle;
+	$title =~ s/(.)/$1 /g;
+	$title =~ s/  /&nbsp;&nbsp;&nbsp;&nbsp;/g;
+	
+	print <<HTML;
+<html>
+<head>
+<title>$HeaderTitle</title>
+<meta name="options" content="$options">
+<style type="text/css">
+<!--
+
+BODY {
+  font-family: serif;
+  background-color: white;
+  font-size: 12px
+}
+
+A {
+  color: blue
+}
+
+A:hover {
+  color: red;
+}
+
+H2 {
+  font-family: Verdana,Arial,Helvetica,sans-serif;
+  font-weight: bold;
+  font-size: 15px;
+}
+
+H3 {
+  font-family: Verdana,Arial,Helvetica,sans-serif;
+  font-weight: bold;
+  font-size: 14px;
+}
+
+/* Report Title */
+.title     {
+  font-family: Garamond,Arial,Helvetica,sans-serif;
+  background: #666699;
+  color: white;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  font-size: 28px
+}
+
+/* For the 2 header table at the start of the report */
+.header {
+  font-family: Verdana,Arial,Helvetica,sans-serif;
+  background-color: #FFEFC6;
+  font-size: 12px
+}                        
+
+/* Table Header */
+.th {
+  font-family: Verdana,Arial,Helvetica,sans-serif;
+  font-size: 12px;
+  background-color: #FFEFC6;
+  color: blue;
+  font-weight: bold;
+  margin-left: 4px;
+}
+
+/* Title Header Title */
+.stitle {
+  font-family: Verdana,Arial,Helvetica,sans-serif;
+  font-size: 14px;
+  background-color: #FFEFC6;
+  color: black;
+  font-weight: bold;
+}
+
+/* Table body */
+.table {
+  color: black;
+  background-color: white;
+  font-size: 12px
+}
+
+/* Table body for matched highlights */
+.tablehighl {
+  color: green;
+  background-color: white;
+  font-weight: normal;
+  font-size: 12px
+}
+
+/* Table body for alert entries */
+.tablealert {
+  color: red;
+  background-color: white;
+  font-weight: bold;
+  font-size: 12px
+}
+
+/* Table body for encrypt/decrypt entries */
+.tablecrypt {
+  color: 620694;
+  background-color: white;
+  font-weight: normal;
+  font-size: 12px
+}
+
+/* Bar Chart */
+.bar {
+  color: #6666FF;
+  margin-left: 4px;
+  height: 10px
+}
+
+-->
+</style>
+</head>
+
+<body>
+
+<p class="title" align="center">$title</p>
+
+<p></p>
+<br>
+
+HTML
+}
+
+#-----------------------------------------------------------------------------
+# Standard HTML footer
+sub HtmlFooter {
+	print <<HTML;
+<hr>
+
+<div align="center">
+<i>
+<a href="http://www.ginini.com/software/fwlogsum/">fwlogsum</a> Version: $version<br>
+Generated: $Date<br>
+</i>
+</div>
+
+</body>
+</html>
+
+HTML
+}
+
+#-----------------------------------------------------------------------------
+# Plain text headers
+sub BodyHeader {
+	if ($report eq '80a') {
+		print <<EOF;
+SOURCE ADDRESS             DESTINATION ADDRESS        SERVICE        COUNT  RULE
+--------------------------------------------------------------------------------
+EOF
+	}
+	elsif ($report eq '80b') {
+		print <<EOF;
+FW1-HOST SOURCE ADDRESS         DESTINATION ADDRESS    SERVICE        COUNT RULE
+--------------------------------------------------------------------------------
+EOF
+	}
+	elsif ($report eq '132a') {
+		print <<EOF;
+SOURCE ADDRESS                                   DESTINATION ADDRESS                              SERVICE               COUNT  RULE
+-----------------------------------------------------------------------------------------------------------------------------------
+EOF
+	}
+	elsif ($report eq '132b') {
+		print <<EOF;
+FW-1 HOST    SOURCE ADDRESS                               DESTINATION ADDRESS                          SERVICE          COUNT  RULE
+-----------------------------------------------------------------------------------------------------------------------------------
+EOF
+	}
+}
+
+#-----------------------------------------------------------------------------
+# Table headers
+sub TableHeader {
+
+print <<HTML;
+<table width="100%" border="5">
+<tr class="th" align="center">
+HTML
+
+	print qq(<td height="50" width="13%" class="th">FW1 Host</td>\n) unless $ExcludeFWhost;
+
+	print <<HTML;
+<td height="50" width="20%" class="th">Source Address</td>
+<td height="50" width="20%" class="th">Destination Address</td>
+<td height="50" width="20%" class="th">Service</td>
+<td height="50" width="7%" class="th">Count</td>
+<td height="50" width="5%" class="th">Rule</td>
+HTML
+
+	print qq(<td height="50" width="15%" class="th" align="left">Attack Info</td>) if $attackinfo;
+	print qq(</tr>\n);
+	
+}
+
+#-----------------------------------------------------------------------------
+sub ColourIndex {
+	print <<HTML;
+<table border="2">
+<tr class="th">
+ <td>Colour Index</td>
+</tr>
+<tr class="table">
+ <td>Standard Entries</td>
+</tr>
+<tr class="tablehighl">
+ <td>Highlighted Entries</td>
+</tr>
+<tr class="tablealert">
+ <td>Alert Entries</td>
+</tr>
+<tr class="tablecrypt">
+ <td>Encrypted/Decrypted Entries</td>
+</tr>
+</table>
+
+HTML
+}
+
+#-----------------------------------------------------------------------------
+# Outputs a row for the headers
+sub HeaderRow {
+	my ($title,$data) = @_;
+
+	print qq(<tr><td>$title</td><td align="right"> $data</td></tr>\n);
+}
+
+#-----------------------------------------------------------------------------
+# Print current time and message for verbose output
+sub Vprint {
+	my $Message=shift;
+
+	my $Time=localtime;
+	$Time =~ s/\w+ +\w+ +\w+ +//;
+	$Time =~ s/ .*//;
+
+	print STDERR "$Time --> $Message\n";
+}
+
+#-----------------------------------------------------------------------------
+sub Usage {
+	print <<HELPMSG;
+Usage: $0 [-a| <entries>] [-ACDpqRSTuvwyY] [-B <dir>] [-bi|-bo] [-d <delimiter>] [-ra|-rd|-rr|-rt|-rx] [-c <80|132>] [-e|-f <service>,<service>...] [-g <num>] [-H <report title>] [-i <entries>] [-lL <logfile>] [-n <if name>] [-m <mail address>] [-o <file>] [-P <max summ>] [-sa|-sc|-sd|-sf|-sr|-ss|-sv>] [-t <search string>] [-xb|-xt]
+
+-a  --highlight		Highlight specified lines
+-A  --attackinfo	Display attack info from SmartDefense
+-B  --trenddir		Trend data directory
+-bo --outbound		Report only on outbound traffic
+-bi --inbound		Report only on inbound traffic
+-c  --width		Column width.  80 or 132 chars
+-C  --cachedns		Cache DNS results
+-d  --delimiter		Delimiter for logexport fields (default: $Delimiter)
+-D  --incdomsum		Include domain summary in report
+-e  --excludesvc	Exclude specified service(s) from report 
+-f  --excludesrcsvc	Exclude specified source services(s) from report
+-g  --restrictcount	Restrict entries with less than the specified count
+-H  --header		Report header title
+-i  --ignore		Ignore specified entries (perl regexp)
+-l  --logexport		Read from specified logexport file (Standard or compressed)
+-L  --fw1log		Read from specified FW1 log file (Standard or compressed)
+-m  --mail		Mail report to specified user
+-n  --excludeif		Exclude specified FW interface/s from the report
+-o  --output		Output to specified file
+-p  --incsrcport	Include source port number in report
+-P  --summaries		Number of entries to appear in the summary (default: $Top)
+-q  --postresolveip	Resolve IP addresses after filtering has been performed.
+-R  --resolveip		Resolve IP addresses (before filtering)
+-ra --rptaccepts	Report only on accepted entries
+-rd --rptdrops		Report only on dropped entries
+-rr --rptrejects	Report only on rejected entries
+-rt --rptattacks	Report only on attack entries
+-rx --rptdropsrejects	Report only on dropped and rejected entries (Default)
+-S  --summary		Generate Summary only.
+-sa --sortattack	Sort by attack type (only relevant for SmartDefense entries)
+-sc --sortcount		Sort by count (default)
+-sd --sortdest		Sort by destination address
+-sf --sortfw		Sort by firewall host
+-sr --sortrule		Sort by rule number
+-ss --sortsrc		Sort by source address
+-sv --sortsvc		Sort by service
+-t  --includeonly	Report only on specified entries (perl regexp)
+-T  --time24		Display time summary as 24 hour clock
+-v  --verbose		Verbose mode
+-w  --html		Output in HTML
+-xb --xlateboth		Report both normal address/port and translated address/port
+-xt --xlate		Report just the translated address/port
+-y  --svcname		Convert port numbers to their name
+-Y  --svcport		Convert port names to their number
+
+Version: $version
+HELPMSG
+
+	exit 0;
+}

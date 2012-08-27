@@ -1,0 +1,41 @@
+#!/usr/bin/perl 
+#------------------------------------------------------------------------------
+#
+# SCRIPT:	splitorig
+#
+# AUTHOR:	Peter Sundstrom 
+#
+# FUNCTION:	Splits a  FW1 logexport file into individual logs based
+#		on FW origin.  This is a lot more efficient than multiple
+#		parses of a huge log file with fwlogsum to report on
+#		individual firewalls.
+#
+#
+#==============================================================================
+
+my $delimiter=';';
+
+my ($logheader,%origins);
+
+while (<>) {
+	next if (/^$/);
+
+	# Save the header line
+	if (/num.date.time/) {
+		$logheader=$_;
+		next;
+	}
+
+	# Origin field is the forth field
+	my $orig = (split(/$delimiter/))[3];
+
+	if ($origins{$orig}) {
+		print $orig $_;
+	}
+	else {
+		$origins{$orig}=$orig;
+		open $orig, ">$orig.logexport" or die "Can not open $orig.logexport $!\n";
+		print $orig $logheader;
+		print $orig $_;
+	}
+}
